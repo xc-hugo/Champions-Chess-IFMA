@@ -25,6 +25,17 @@ showTab(location.hash.replace("#","") || "home");
 function fmtDateStr(s){ return s ? new Date(s).toLocaleString("pt-BR") : "—"; }
 function option(el, value, label){ const o=document.createElement("option"); o.value=value; o.textContent=label; el.appendChild(o); }
 
+// Rotulo amigável para etapa
+function stageLabel(s){
+  switch((s||"").toLowerCase()){
+    case "groups":    return "F. Grupos";
+    case "semifinal": return "Semifinal";
+    case "final":     return "Final";
+    case "third":     return "3º Lugar";
+    default:          return s || "—";
+  }
+}
+
 // Slug/username helpers
 function slugifyName(name){
   return (name || "")
@@ -224,7 +235,7 @@ function renderHome(){
 
   const rows = pick.map(m=>`
     <tr>
-      <td>${m.stage || "-"}</td>
+      <td>${stageLabel(m.stage)}</td>
       <td>${m.group || "-"}</td>
       <td>${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}</td>
       <td>${fmtDateStr(m.date)}</td>
@@ -239,7 +250,19 @@ function renderHome(){
   if($("#home-next")) $("#home-next").innerHTML = table;
 
   const posts = state.posts.slice(0,3).map(p=> renderPostItem(p)).join("");
-  if($("#home-posts")) $("#home-posts").innerHTML = posts || `<p class="muted">Sem comunicados.</p>`;
+  if($("#home-posts")) {
+    $("#home-posts").innerHTML = posts || `<p class="muted">Sem comunicados.</p>`;
+    // permitir apagar do card da Home também (admin)
+    if (state.admin) {
+      document.querySelectorAll("#home-posts .btn-del-post").forEach(b=>{
+        b.onclick = async ()=>{
+          if(confirm("Apagar este comunicado?")){
+            await deleteDoc(doc(db,"posts", b.dataset.id));
+          }
+        };
+      });
+    }
+  }
 }
 
 // ========== Players ==========
@@ -339,7 +362,7 @@ function renderTables(){
   });
 }
 
-// ========== Partidas (inclui 'Adiado') ==========
+// ========== Partidas (inclui 'Adiado' e rótulos de etapa) ==========
 function renderMatches(){
   const stageF = $("#filter-stage")?.value || "all";
   const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
@@ -362,7 +385,7 @@ function renderMatches(){
                   : m.result==="postponed" ? "Adiado"
                   : "Pendente";
           return `<tr data-id="${m.id}">
-            <td>${m.stage||"-"}</td>
+            <td>${stageLabel(m.stage)}</td>
             <td>${m.group||"-"}</td>
             <td>${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}</td>
             <td>${fmtDateStr(m.date)}</td>
@@ -436,9 +459,10 @@ async function loadMatchToForm(id){
   if(!m) return;
   $("#match-id").value = m.id;
   $("#match-a").value = m.aId || "";
-  $("#match-b").value = m.bId || ""
+  $("#match-b").value = m.bId || "";
   $("#match-stage").value = m.stage || "groups";
   $("#match-group").value = m.group || "";
+  // ✅ Data só muda se usuário editar
   $("#match-date").value = m.date || "";
   $("#match-date-orig").value = m.date || "";
   $("#match-date").dataset.dirty = "false";
