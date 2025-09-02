@@ -1,25 +1,36 @@
-// app.js — Champions Chess IFMA (ESM; depende de firebase.js do projeto)
+// app.js — Champions Chess IFMA (ESM; depende de ./firebase.js)
 
+// Importa objetos e helpers que você expôs no firebase.js
 import {
-  app, auth, db,
+  app,            // initializeApp(...)
+  auth, db,       // auth e firestore
   loginWithGoogle, logout, watchAuth, isAdmin, setDisplayName,
   collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
   onSnapshot, query, orderBy, where, serverTimestamp, runTransaction
 } from "./firebase.js";
 
-/* ========================= Helpers & UI ========================= */
+/* ================================================================
+   Helpers de DOM, Datas e UI
+=================================================================*/
 const $  = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
 const sleep = ms => new Promise(r=>setTimeout(r, ms));
+
 function confirmAction(msg){ return new Promise(res=> res(window.confirm(msg))); }
+
+function slugifyName(name){
+  return (name||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+    .toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"").slice(0,20)||"user";
+}
+function shortUid(uid){ return (uid||"").slice(-4)||Math.floor(Math.random()*9999).toString().padStart(4,"0"); }
 
 // Datas: aceita local "YYYY-MM-DDTHH:mm[:ss]" e ISO com Z/offset
 function parseLocalDate(str){
   if(!str) return null;
   const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?([Zz]|[+\-]\d{2}:\d{2})?$/.exec(str);
   if(m){
-    if(m[7]){ const d=new Date(str); return isNaN(d)?null:d; }
-    return new Date(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+(m[6]||0),0);
+    if(m[7]){ const d=new Date(str); return isNaN(d)?null:d; } // tem TZ
+    return new Date(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+(m[6]||0),0); // local
   }
   const d = new Date(str); return isNaN(d)?null:d;
 }
@@ -35,14 +46,12 @@ function stageLabel(s){
     default: return s||"—";
   }
 }
-function slugifyName(name){
-  return (name||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"")
-    .toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"").slice(0,20)||"user";
-}
-function shortUid(uid){ return (uid||"").slice(-4)||Math.floor(Math.random()*9999).toString().padStart(4,"0"); }
 
-/* ===== Navbar fixa: compensação e scroll pro topo ===== */
+/* ================================================================
+   Navbar fixa: sem espaço acima e sempre levando pro topo
+=================================================================*/
 function applyTopbarOffset(){
+  // remove qualquer margem padrão que cause “vão” acima
   if (getComputedStyle(document.body).margin !== "0px") document.body.style.margin = "0";
   const header = document.querySelector(".topbar");
   const h = header ? header.offsetHeight : 0;
@@ -50,20 +59,28 @@ function applyTopbarOffset(){
   document.documentElement.style.scrollPaddingTop = `${h}px`;
 }
 function showTab(id){
-  if(!id) id="home";
+  if(!id) id = "home";
   $$(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === id));
   $$(".view").forEach(v => v.classList.toggle("visible", v.id === id));
-  if(location.hash.replace("#","")!==id) location.hash = id;
+  if(location.hash.replace("#","") !== id) location.hash = id;
   applyTopbarOffset();
-  window.scrollTo({ top: 0, behavior: "auto" });
+  window.scrollTo({ top: 0, behavior: "auto" }); // vai pro topo sem cortar
 }
 window.addEventListener("load", applyTopbarOffset);
 window.addEventListener("resize", applyTopbarOffset);
 window.addEventListener("hashchange", ()=> showTab(location.hash.replace("#","") || "home"));
-$$(".tab").forEach(b => b.addEventListener("click", e=>{ e.preventDefault(); showTab(b.dataset.tab); }));
+$$(".tab").forEach(b => {
+  b.addEventListener("click", (e)=>{
+    e.preventDefault();
+    showTab(b.dataset.tab);
+  });
+});
 showTab(location.hash.replace("#","") || "home");
 
-// scroll helper (gerenciar partidas)
+// Clique no chip do usuário abre a aba de Perfil
+$("#user-chip")?.addEventListener("click", () => showTab("perfil"));
+
+// scroll helper pra gerenciador de partidas
 function ensureAndScrollTo(sel){
   let tries=0;
   const t=setInterval(()=>{
@@ -79,15 +96,19 @@ function ensureAndScrollTo(sel){
   },50);
 }
 
-/* ========================= Estado ========================= */
+/* ================================================================
+   Estado global
+=================================================================*/
 let state = {
   user:null, admin:false, profile:null,
   players:[], matches:[], posts:[], chat:[],
-  bets:[], wallets:[], // apostas & carteira de pontos
+  bets:[], wallets:[]
 };
-const prevResults = new Map(); // cache local (apenas UI)
+const prevResults = new Map(); // cache do último resultado (UI)
 
-/* ========================= Admin Claims + Fallback ========================= */
+/* ================================================================
+   Admin: custom claims + fallback em Firestore
+=================================================================*/
 async function refreshAdminStatus(){
   let ok = false;
   if(auth.currentUser){
@@ -117,10 +138,9 @@ async function requireAdmin(){
   return ok;
 }
 
-/* ========================= Auth & Perfil ========================= */
-$("#btn-open-login")?.addEventListener("click", async ()=>{ try{ await loginWithGoogle(); }catch(e){ alert("Erro: "+e.message); } });
-$("#btn-logout")?.addEventListener("click", async ()=>{ await logout(); });
-
+/* ================================================================
+   Auth & Perfil (username único com transação)
+=================================================================*/
 async function loadProfile(uid){
   if(!uid){ state.profile=null; return renderProfile(); }
   const snap = await getDoc(doc(db,"profiles",uid));
@@ -128,9 +148,13 @@ async function loadProfile(uid){
   renderProfile();
 }
 
-$("#profile-form")?.addEventListener("submit", async e=>{
+$("#btn-open-login")?.addEventListener("click", async ()=>{ try{ await loginWithGoogle(); }catch(e){ alert("Erro: "+e.message); } });
+$("#btn-logout")?.addEventListener("click", async ()=>{ await logout(); });
+
+$("#profile-form")?.addEventListener("submit", async (e)=>{
   e.preventDefault();
   if(!state.user) return alert("Entre para editar o perfil.");
+
   const display = $("#profile-name").value.trim();
   const base = slugifyName(display);
   const fallback = `${base}-${shortUid(state.user.uid)}`;
@@ -168,8 +192,26 @@ $("#profile-form")?.addEventListener("submit", async e=>{
   }
 });
 
+// garante carteira inicial com 6 pts
+async function ensureWalletInit(uid){
+  if(!uid) return;
+  const refWal = doc(db, "wallets", uid);
+  await runTransaction(db, async (tx)=>{
+    const snap = await tx.get(refWal);
+    if(!snap.exists()){
+      tx.set(refWal, { points: 6, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+    }else{
+      const cur = snap.data() || {};
+      if(typeof cur.points !== "number"){
+        tx.update(refWal, { points: 6, updatedAt: serverTimestamp() });
+      }
+    }
+  });
+}
+
 watchAuth(async (user)=>{
   state.user=user;
+
   $("#btn-open-login")?.classList.toggle("hidden",!!user);
   $("#btn-logout")?.classList.toggle("hidden",!user);
   $("#user-chip")?.classList.toggle("hidden",!user);
@@ -181,11 +223,15 @@ watchAuth(async (user)=>{
   await loadProfile(user?.uid||null);
   await refreshAdminStatus();
 
+  if (user) { await ensureWalletInit(user.uid); }
+
   renderPosts(); renderChat(); renderMatches(); renderHome(); renderAdminSemisList();
   if(user) initRealtimeChat(); // RTDB chat
 });
 
-/* ========================= Firestore listeners ========================= */
+/* ================================================================
+   Firestore listeners
+=================================================================*/
 const colPlayers = collection(db,"players");
 const colMatches = collection(db,"matches");
 const colPosts   = collection(db,"posts");
@@ -195,20 +241,19 @@ const colWallets = collection(db,"wallets");
 onSnapshot(query(colPlayers, orderBy("name")), snap=>{
   state.players = snap.docs.map(d=>({id:d.id,...d.data()}));
   renderPlayers(); fillPlayersSelects(); renderTables(); renderPlayerSelect(); renderHome(); renderAdminSemisList();
+  populateBetOptions(); // nomes na lista de apostas
 });
 
-// Matches: também re-render Players aqui (para atualizar estatísticas!)
 onSnapshot(query(colMatches, orderBy("date")), async snap=>{
   const newMatches = snap.docs.map(d=>({id:d.id,...d.data()}));
 
-  // --- Anúncio automático de resultado (sem duplicar) ---
-  if(await refreshAdminStatus()){ // somente admin publica
+  // Anunciar resultado automaticamente (sem duplicar) — somente admin
+  if(await refreshAdminStatus()){
     const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
     for(const m of newMatches){
       const isFinal = ["A","B","draw"].includes(m.result);
       if(!isFinal) continue;
-      if(m.resultAnnounced) continue; // já anunciado
-      // usa transação pra evitar corrida
+      if(m.resultAnnounced) continue;
       try{
         await runTransaction(db, async tx=>{
           const ref=doc(db,"matches",m.id);
@@ -232,15 +277,15 @@ onSnapshot(query(colMatches, orderBy("date")), async snap=>{
     }
   }
 
-  // cache local (apenas UI)
   prevResults.clear(); newMatches.forEach(m=>prevResults.set(m.id,m.result||null));
 
   state.matches = newMatches;
   renderMatches(); renderTables(); renderPlayers(); renderPlayerDetails(); renderHome(); renderAdminSemisList();
+  populateBetOptions();
 
   if(state.admin){
-    await autoPostponeOverdueMatches();  // adiar só quem venceu prazo
-    await checkAndAutoCreateSemis();     // semis quando grupos finalizam
+    await autoPostponeOverdueMatches();  // adia só quem venceu o prazo (24h)
+    await checkAndAutoCreateSemis();     // cria semis quando grupos finalizam
     await settleFinishedMatchesBets();   // liquida apostas
   }
 });
@@ -250,7 +295,6 @@ onSnapshot(query(colPosts, orderBy("createdAt","desc")), snap=>{
   renderPosts(); renderHome();
 });
 
-// Apostas (opcional)
 onSnapshot(query(colBets, orderBy("createdAt","desc")), snap=>{
   state.bets = snap.docs.map(d=>({id:d.id,...d.data()}));
   renderBets();
@@ -260,7 +304,9 @@ onSnapshot(colWallets, snap=>{
   renderWallet();
 });
 
-/* ========================= Estatísticas & Tabela ========================= */
+/* ================================================================
+   Estatísticas e Tabela
+=================================================================*/
 function statsFromMatches(){
   const stats={};
   for(const p of state.players){ stats[p.id]={ id:p.id, name:p.name, group:p.group, points:0, wins:0, draws:0, losses:0, games:0, winsOver:{} }; }
@@ -274,7 +320,9 @@ function statsFromMatches(){
   return stats;
 }
 
-/* ========================= Home (4 próximas do dia) ========================= */
+/* ================================================================
+   Home (4 próximas do dia)
+=================================================================*/
 function renderHome(){
   const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
   const scheduled=state.matches.filter(m=>!!m.date).slice();
@@ -301,7 +349,9 @@ function renderHome(){
   }
 }
 
-/* ========================= Players (lista + perfil dedicado) ========================= */
+/* ================================================================
+   Players + Perfil dedicado
+=================================================================*/
 function renderPlayers(){
   const stats=statsFromMatches();
   const groups={A:[],B:[]};
@@ -332,27 +382,41 @@ function renderPlayerSelect(){
   state.players.forEach(p=>{ const op=document.createElement("option"); op.value=p.id; op.textContent=p.name; sel.appendChild(op); });
   sel.onchange=renderPlayerDetails;
 }
-function renderPlayerDetails(){
-  const sel=$("#player-select"); const box=$("#player-details"); if(!sel||!box) return;
-  const id=sel.value; if(!id){ box.innerHTML=`<p class="muted">Selecione um jogador para ver detalhes.</p>`; return; }
-  box.innerHTML = buildPlayerDetailsHTML(id);
-}
 function buildPlayerDetailsHTML(id){
-  const stats=statsFromMatches(); const s=stats[id]; if(!s) return `<p class="muted">Sem dados.</p>`;
-  const wins=Object.entries(s.winsOver).map(([n,c])=>`<span class="pill">Venceu ${n} ×${c}</span>`).join("")||"<span class='muted'>Sem vitórias registradas.</span>";
+  const p=state.players.find(x=>x.id===id); const stats=statsFromMatches(); const s=stats[id];
+  const history = state.matches
+    .filter(m=> m.aId===id || m.bId===id)
+    .map(m=>{
+      const opp = m.aId===id ? state.players.find(x=>x.id===m.bId)?.name : state.players.find(x=>x.id===m.aId)?.name;
+      const youWin = (m.result==="A" && m.aId===id) || (m.result==="B" && m.bId===id);
+      const youDraw = m.result==="draw";
+      const res = youWin? "Vitória" : youDraw? "Empate" : (["A","B"].includes(m.result)?"Derrota":"Pendente");
+      return `<tr><td>${stageLabel(m.stage)} ${m.group?`/ ${m.group}`:""}</td><td>${opp||"?"}</td><td>${fmtLocalDateStr(m.date)}</td><td>${res}</td><td>${m.code||"-"}</td></tr>`;
+    }).join("");
   return `
-    <p><b>${s.name}</b> — Grupo ${s.group}</p>
-    <p>Pontos: <b>${s.points}</b> · Jogos: <b>${s.games}</b> · V:${s.wins} · E:${s.draws} · D:${s.losses}</p>
-    <div>${wins}</div>
-    <div style="margin-top:8px"><button class="btn" data-open-profile="${s.id}">Abrir perfil</button></div>
+    <p><b>${s?.name||p?.name||"?"}</b> — Grupo ${p?.group||"-"}</p>
+    <p>Pontos: <b>${s?.points||0}</b> · Jogos: <b>${s?.games||0}</b> · V:${s?.wins||0} · E:${s?.draws||0} · D:${s?.losses||0}</p>
+    <div style="margin:6px 0 10px 0">
+      ${Object.entries(s?.winsOver||{}).map(([n,c])=>`<span class="pill">Venceu ${n} ×${c}</span>`).join("") || "<span class='muted'>Sem vitórias registradas.</span>"}
+    </div>
+    <div style="margin-top:8px"><button class="btn" data-open-profile="${p?.id}">Abrir perfil</button></div>
   `;
 }
+function renderPlayerDetails(){
+  const sel=$("#player-select"); if(!sel) return;
+  const id = sel.value;
+  const box=$("#player-details"); if(!box) return;
+  if(!id){ box.innerHTML=`<p class="muted">Selecione um jogador para ver detalhes.</p>`; return; }
+  box.innerHTML = buildPlayerDetailsHTML(id);
+  // bind botão Abrir Perfil
+  const btn = box.querySelector("[data-open-profile]");
+  if(btn) btn.addEventListener("click", ()=> openPlayerProfile(id));
+}
+
 function openPlayerProfile(id){
   const container=$("#player-profile"); if(!container){ showTab("players"); return; }
   container.innerHTML = buildPlayerProfileHTML(id);
-  // bind voltar
   container.querySelectorAll("[data-back]").forEach(b=> b.onclick=()=> showTab("players"));
-  // força rota #player/<id>
   location.hash = `player/${id}`;
   showTab("player-profile");
 }
@@ -391,7 +455,9 @@ window.addEventListener("load",()=>{
   if(h.startsWith("player/")){ openPlayerProfile(h.split("/")[1]); }
 });
 
-/* ========================= Tabelas & Partidas ========================= */
+/* ================================================================
+   Tabelas
+=================================================================*/
 function renderTables(){
   const stats=statsFromMatches(); const groups={A:[],B:[]};
   for(const id in stats){ const s=stats[id]; (groups[s.group]||(groups.A=[])).push(s); }
@@ -401,6 +467,63 @@ function renderTables(){
     const html=`<table><thead><tr><th>#</th><th>Jogador</th><th>Pts</th><th>J</th><th>V</th><th>E</th><th>D</th></tr></thead><tbody>${rows}</tbody></table>`;
     const box=$(`#table-${g}`); if(box) box.innerHTML=html;
   });
+}
+
+/* ================================================================
+   Partidas (inclui Probabilidades/ODDS + edição admin)
+=================================================================*/
+function getMatchBetCounts(matchId){
+  const bets = state.bets.filter(b => b.matchId === matchId);
+  let cA=0, cB=0, cD=0;
+  for(const b of bets){
+    if(b.pick==="A") cA++; else if(b.pick==="B") cB++; else if(b.pick==="draw") cD++;
+  }
+  return { cA, cB, cD, total: cA+cB+cD };
+}
+function perfScore(playerId){
+  const stats = statsFromMatches();
+  const s = stats[playerId] || { wins:0, draws:0, losses:0, games:0 };
+  const raw = (s.wins*3 + s.draws*1 - s.losses*2);
+  return 1 + (s.games ? raw / s.games : 0); // mínimo 1
+}
+function computeProbabilitiesAndOdds(m){
+  const { cA, cB, cD } = getMatchBetCounts(m.id);
+  const sA = cA + 1, sB = cB + 1, sD = cD + 1;
+  const S  = sA + sB + sD;
+
+  const pbA = sA / S, pbB = sB / S, pbD = sD / S;
+
+  const pAperf = perfScore(m.aId);
+  const pBperf = perfScore(m.bId);
+  const perfSum = pAperf + pBperf || 1;
+  const pfA = pAperf / perfSum;
+  const pfB = pBperf / perfSum;
+
+  // 60% popularidade das apostas + 40% desempenho; empate baseline 10%
+  let pA = 0.6*pbA + 0.4*pfA;
+  let pB = 0.6*pbB + 0.4*pfB;
+  let pD = 0.6*pbD + 0.4*0.10;
+
+  const T = pA + pB + pD;
+  pA/=T; pB/=T; pD/=T;
+
+  const clamp=(x,min,max)=> Math.max(min, Math.min(max,x));
+  const oddA = clamp(1/pA, 1.2, 5);
+  const oddB = clamp(1/pB, 1.2, 5);
+  const oddD = clamp(1/pD, 1.2, 5);
+
+  return {
+    probs: {
+      A: Math.round(pA*100),
+      B: Math.round(pB*100),
+      D: Math.round(pD*100),
+    },
+    odds: {
+      A: Number(oddA.toFixed(2)),
+      B: Number(oddB.toFixed(2)),
+      D: Number(oddD.toFixed(2)),
+    }
+  };
 }
 
 function renderMatches(){
@@ -415,19 +538,24 @@ function renderMatches(){
 
   const makeTable=items=>`
     <table>
-      <thead><tr><th>Etapa</th><th>Grupo</th><th>Partida</th><th>Data/Hora</th><th>Código</th><th>Resultado</th>${state.admin?`<th>Ações</th>`:""}</tr></thead>
+      <thead><tr>
+        <th>Etapa</th><th>Grupo</th><th>Partida</th><th>Data/Hora</th><th>Código</th>
+        <th>Prob.</th><th>Resultado</th>${state.admin?`<th>Ações</th>`:""}
+      </tr></thead>
       <tbody>
         ${items.map(m=>{
           const res = m.result==="A"?mapP[m.aId]
                     : m.result==="B"?mapP[m.bId]
                     : m.result==="draw"?"Empate"
                     : m.result==="postponed"?"Adiado":"Pendente";
+          const probTxt = (() => { const { probs } = computeProbabilitiesAndOdds(m); return `A ${probs.A}% · E ${probs.D}% · B ${probs.B}%`; })();
           return `<tr data-id="${m.id}">
             <td>${stageLabel(m.stage)}</td>
             <td>${m.group||"-"}</td>
             <td>${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}</td>
             <td>${fmtLocalDateStr(m.date)}</td>
             <td>${m.code||"-"}</td>
+            <td>${probTxt}</td>
             <td>${res}</td>
             ${state.admin?`<td><button class="btn ghost btn-edit" data-id="${m.id}">Editar</button></td>`:""}
           </tr>`;
@@ -447,18 +575,21 @@ function renderMatches(){
 }
 $("#filter-stage")?.addEventListener("change", renderMatches);
 
-/* ===== Adiamento automático (24h após a data) — só a partida vencida ===== */
+/* Adiamento automático — 24h após a data da partida, somente a que venceu o prazo */
 async function autoPostponeOverdueMatches(){
-  const now=Date.now(); const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name])); const tasks=[];
+  if(!state.admin) return;
+  const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
+  const tasks=[];
   for(const m of state.matches){
     if(!m?.date) continue;
     const dt=parseLocalDate(m.date); if(!dt) continue;
-    if(m?.result) continue;
+    if(m?.result) continue; // já tem resultado/adiado
     const due=dt.getTime()+24*60*60*1000;
-    if(now<due) continue;
+    if(Date.now()<due) continue;
 
     tasks.push(runTransaction(db, async tx=>{
-      const ref=doc(db,"matches",m.id); const snap=await tx.get(ref); if(!snap.exists()) return;
+      const ref=doc(db,"matches",m.id); const snap=await tx.get(ref);
+      if(!snap.exists()) return;
       const cur=snap.data(); if(cur?.result||cur?.postponedNotice) return;
       const d=parseLocalDate(cur.date); if(!d) return; if(Date.now()<d.getTime()+24*60*60*1000) return;
 
@@ -474,7 +605,7 @@ async function autoPostponeOverdueMatches(){
   if(tasks.length) await Promise.allSettled(tasks);
 }
 
-/* ===== Semifinais automáticas quando F. Grupos fecha ===== */
+/* Semifinais automáticas quando F. Grupos termina */
 async function checkAndAutoCreateSemis(){
   const groupMatches=state.matches.filter(m=>m.stage==="groups");
   if(groupMatches.length===0) return;
@@ -499,7 +630,9 @@ async function checkAndAutoCreateSemis(){
     createdAt:serverTimestamp(), author:"Sistema", authorEmail:"" });
 }
 
-/* ========================= Admin: Players & Matches ========================= */
+/* ================================================================
+   Admin: Players & Matches
+=================================================================*/
 function fillPlayersSelects(){
   const ids=["match-a","match-b","semi1-a","semi1-b","semi2-a","semi2-b"];
   ids.forEach(id=>{
@@ -509,7 +642,8 @@ function fillPlayersSelects(){
   });
   const sel=$("#player-select"); if(sel && !sel.value) renderPlayerSelect();
 }
-$("#player-form")?.addEventListener("submit", async e=>{
+
+$("#player-form")?.addEventListener("submit", async (e)=>{
   e.preventDefault();
   const id=$("#player-id").value;
   const data={ name:$("#player-name").value.trim(), group:$("#player-group").value };
@@ -520,6 +654,7 @@ $("#player-form")?.addEventListener("submit", async e=>{
     $("#player-form").reset(); $("#player-id").value="";
   }catch(err){ alert("Erro: "+err.message); }
 });
+$("#player-reset")?.addEventListener("click", ()=>{ $("#player-form").reset(); $("#player-id").value = ""; });
 $("#player-delete")?.addEventListener("click", async ()=>{
   const id=$("#player-id").value; if(!id) return;
   if(!(await confirmAction("Excluir jogador?"))) return;
@@ -537,6 +672,7 @@ async function loadMatchToForm(id){
   $("#match-code").value=m.code||""; $("#match-result").value=m.result||"";
   showTab("partidas"); ensureAndScrollTo("#admin-matches, #manage-matches, #match-form");
 }
+$("#match-reset")?.addEventListener("click", ()=>{ $("#match-form").reset(); $("#match-id").value=""; $("#match-date").dataset.dirty="false"; });
 $("#match-delete")?.addEventListener("click", async ()=>{
   const id=$("#match-id").value; if(!id) return;
   if(!(await confirmAction("Excluir partida?"))) return;
@@ -544,7 +680,7 @@ $("#match-delete")?.addEventListener("click", async ()=>{
   await deleteDoc(doc(db,"matches",id));
   $("#match-form").reset(); $("#match-id").value=""; $("#match-date").dataset.dirty="false";
 });
-$("#match-form")?.addEventListener("submit", async e=>{
+$("#match-form")?.addEventListener("submit", async (e)=>{
   e.preventDefault();
   if(!(await requireAdmin())) return;
   const payload={
@@ -559,8 +695,10 @@ $("#match-form")?.addEventListener("submit", async e=>{
   $("#match-form").reset(); $("#match-id").value=""; $("#match-date").dataset.dirty="false";
 });
 
-/* ========================= Posts ========================= */
-$("#post-form")?.addEventListener("submit", async e=>{
+/* ================================================================
+   Posts
+=================================================================*/
+$("#post-form")?.addEventListener("submit", async (e)=>{
   e.preventDefault();
   if(!auth.currentUser) return alert("Entre para publicar.");
   const title=$("#post-title").value.trim(); const body=$("#post-body").value.trim();
@@ -594,13 +732,17 @@ function renderPosts(){
   }
 }
 
-/* ========================= Chat — Realtime Database ========================= */
+/* ================================================================
+   Chat — Realtime Database (RTDB)
+   OBS: para o admin apagar mensagens de qualquer usuário, ajuste as
+   RULES do RTDB no console: auth.token.admin === true pode remover.
+=================================================================*/
 let rtdb=null, rtdbRefChat=null, rtdbApi=null;
 async function initRealtimeChat(){
-  if(rtdb) return; // já iniciado
+  if(rtdb) return;
   // carrega a SDK do RTDB dinamicamente
   rtdbApi = await import("https://www.gstatic.com/firebasejs/12.2.1/firebase-database.js");
-  const { getDatabase, ref, onValue, push, remove } = rtdbApi;
+  const { getDatabase, ref, onValue } = rtdbApi;
   rtdb = getDatabase(app);
   rtdbRefChat = ref(rtdb, "chat");
 
@@ -608,7 +750,6 @@ async function initRealtimeChat(){
   onValue(rtdbRefChat, (snap)=>{
     const val = snap.val() || {};
     const list = Object.entries(val).map(([id,v])=>({ id, ...v }));
-    // expira cliente-side (24h)
     const now = Date.now();
     state.chat = list
       .filter(m => !m.expireAt || m.expireAt > now)
@@ -616,7 +757,7 @@ async function initRealtimeChat(){
     renderChat();
   });
 }
-$("#chat-form")?.addEventListener("submit", async e=>{
+$("#chat-form")?.addEventListener("submit", async (e)=>{
   e.preventDefault();
   if(!auth.currentUser){ alert("Entre para enviar mensagens."); return; }
   if(!rtdb) await initRealtimeChat();
@@ -629,7 +770,7 @@ $("#chat-form")?.addEventListener("submit", async e=>{
     authorEmail: auth.currentUser?.email || "",
     username: state.profile?.username || null,
     uid: auth.currentUser.uid,
-    createdAt: Date.now(),  // simples e consistente
+    createdAt: Date.now(),
     expireAt
   });
   $("#chat-text").value="";
@@ -649,27 +790,52 @@ function renderChat(){
   if($("#chat-list")){
     $("#chat-list").innerHTML = html || `<p class="muted">Sem mensagens nas últimas 24h.</p>`;
     if(state.admin){
-      $$(".btn-del-chat").forEach(b=> b.onclick=async ()=>{
-        if(!(await confirmAction("Apagar esta mensagem do chat?"))) return;
-        if(!(await requireAdmin())) return;
-        const { ref, remove } = rtdbApi;
-        await remove(ref(rtdb, `chat/${b.dataset.id}`));
+      $$(".btn-del-chat").forEach(b=>{
+        b.onclick = async ()=>{
+          if(!(await confirmAction("Apagar esta mensagem do chat?"))) return;
+          if(!(await requireAdmin())) return;
+          try{
+            const { ref, remove } = rtdbApi;
+            await remove(ref(rtdb, `chat/${b.dataset.id}`));
+          }catch(err){
+            alert("Não foi possível apagar. Verifique as regras do Realtime Database para permitir que admin apague qualquer mensagem.");
+          }
+        };
       });
     }
   }
 }
 
-/* ========================= Apostas ========================= */
-/** Regras simples:
- * - Usuário aposta antes do horário da partida
- * - pick ∈ {"A","B","draw"}
- * - Ao finalizar a partida, liquida: +2 pts para acerto, +0 erro
- */
-const BET_REWARD_POINTS = 2;
+/* ================================================================
+   Apostas — populate select, odds e carteira
+=================================================================*/
+function populateBetOptions(){
+  const sel = $("#bet-match");
+  if(!sel) return;
+  const now = Date.now();
+  const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
+  const upcoming = state.matches
+    .filter(m => m.date && parseLocalDate(m.date)?.getTime() > now && !m.result)
+    .sort((a,b) => parseLocalDate(a.date) - parseLocalDate(b.date));
+
+  sel.innerHTML = "";
+  const opt0 = document.createElement("option");
+  opt0.value = ""; opt0.textContent = "— selecione —";
+  sel.appendChild(opt0);
+
+  upcoming.forEach(m=>{
+    const o = document.createElement("option");
+    o.value = m.id;
+    o.textContent = `${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"} • ${fmtLocalDateStr(m.date)} ${m.code?`• ${m.code}`:""}`;
+    sel.appendChild(o);
+  });
+}
 
 $("#bet-form")?.addEventListener("submit", async e=>{
   e.preventDefault();
   if(!auth.currentUser) return alert("Entre para apostar.");
+  await ensureWalletInit(auth.currentUser.uid);
+
   const matchId=$("#bet-match").value;
   const pick=$("#bet-pick").value; // "A" | "B" | "draw"
   if(!matchId || !["A","B","draw"].includes(pick)) return alert("Selecione partida e palpite válido.");
@@ -683,36 +849,48 @@ $("#bet-form")?.addEventListener("submit", async e=>{
   const exists = state.bets.find(b=> b.uid===auth.currentUser.uid && b.matchId===matchId);
   if(exists) return alert("Você já apostou nessa partida.");
 
+  // calcula odds atuais e armazena um snapshot
+  const { odds, probs } = computeProbabilitiesAndOdds(m);
+  const oddSnap = pick==="A" ? odds.A : pick==="B" ? odds.B : odds.D;
+
   await addDoc(collection(db,"bets"),{
     uid:auth.currentUser.uid, userEmail:auth.currentUser.email,
-    matchId, pick, createdAt:serverTimestamp(), settled:false
+    matchId, pick,
+    createdAt:serverTimestamp(),
+    settled:false,
+    odd: oddSnap,          // multiplicador (snapshot no momento da aposta)
+    probsSnap: probs       // informativo
   });
+
   $("#bet-form").reset();
-  alert("Aposta registrada!");
+  alert(`Aposta registrada! Odd ${oddSnap}x`);
 });
 
 async function settleFinishedMatchesBets(){
-  // para cada partida finalizada e não liquidada, liquidar as apostas não-settled
   const finals = state.matches.filter(m=>["A","B","draw"].includes(m.result));
   for(const m of finals){
-    // pega apostas não liquidadas desta partida
     const betsSnap = await getDocs(query(colBets, where("matchId","==", m.id), where("settled","==", false)));
     if(betsSnap.empty) continue;
 
-    const isWinner = pick => pick===m.result;
-    // Liquida cada aposta em transação: marca settled e dá pontos
     const ops = betsSnap.docs.map(bd => runTransaction(db, async tx=>{
       const betRef=doc(db,"bets",bd.id); const betSnap=await tx.get(betRef);
       if(!betSnap.exists()) return;
       const bet=betSnap.data(); if(bet.settled) return;
 
-      const won = isWinner(bet.pick);
+      const won = bet.pick === m.result;
       const walletRef = doc(db,"wallets", bet.uid);
       const walSnap=await tx.get(walletRef);
       const current = walSnap.exists()? (walSnap.data().points||0) : 0;
-      const add = won?BET_REWARD_POINTS:0;
 
-      tx.set(walletRef,{ points: current+add, updatedAt:serverTimestamp() },{merge:true});
+      // recompensa: odd * 2 pts (arredonda) se acertar; 0 se errar
+      const odd = typeof bet.odd === "number" ? bet.odd : 1.5;
+      const add = won ? Math.max(1, Math.round(odd * 2)) : 0;
+
+      if(!walSnap.exists()){
+        tx.set(walletRef, { points: 6 + add, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+      }else{
+        tx.update(walletRef, { points: current + add, updatedAt: serverTimestamp() });
+      }
       tx.update(betRef,{ settled:true, won, settledAt:serverTimestamp(), reward:add });
     }));
     await Promise.allSettled(ops);
@@ -720,13 +898,12 @@ async function settleFinishedMatchesBets(){
 }
 
 function renderBets(){
-  // se houver #bets-list/#wallet, preenche
   const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
   const mapM=Object.fromEntries(state.matches.map(m=>[m.id,m]));
   const my = auth.currentUser ? state.bets.filter(b=> b.uid===auth.currentUser.uid) : [];
   const rows = my.map(b=>{
     const m=mapM[b.matchId]; const vs=m?`${mapP[m.aId]} × ${mapP[m.bId]}`:"?";
-    const res = b.settled ? (b.won?"Acertou":"Errou") : "Pendente";
+    const res = b.settled ? (b.won?`Acertou (+${b.reward||0})`:"Errou") : "Pendente";
     return `<tr><td>${vs}</td><td>${stageLabel(m?.stage)} ${m?.group||""}</td><td>${b.pick}</td><td>${res}</td></tr>`;
   }).join("");
   if($("#bets-list")){
@@ -740,7 +917,9 @@ function renderWallet(){
   if($("#wallet-points")) $("#wallet-points").textContent = pts;
 }
 
-/* ========================= Semis (admin) ========================= */
+/* ================================================================
+   Admin: Semifinais & Reset
+=================================================================*/
 $("#semi-autofill")?.addEventListener("click", ()=>{
   const stats=statsFromMatches(); const groups={A:[],B:[]};
   for(const id in stats){ const s=stats[id]; (groups[s.group]||[]).push(s); }
@@ -770,7 +949,6 @@ function renderAdminSemisList(){
   $("#semi-list") && ($("#semi-list").innerHTML=html);
 }
 
-/* ========================= Reset Torneio (admin) ========================= */
 $("#btn-reset-tournament")?.addEventListener("click", async ()=>{
   if(!(await requireAdmin())) return;
   if(!(await confirmAction("Resetar o torneio? (apaga partidas, posts, chat, apostas)"))) return;
@@ -794,7 +972,9 @@ $("#btn-reset-tournament")?.addEventListener("click", async ()=>{
   }catch(err){ alert("Erro ao resetar: "+err.message); }
 });
 
-/* ========================= Search & misc binds ========================= */
+/* ================================================================
+   Busca rápida por jogador (Players)
+=================================================================*/
 $("#player-search-btn")?.addEventListener("click", ()=>{
   const q=($("#player-search")?.value||"").toLowerCase();
   const found=state.players.find(p=>p.name.toLowerCase().includes(q));
