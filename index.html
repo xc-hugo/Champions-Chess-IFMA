@@ -17,38 +17,34 @@
   </style>
 </head>
 <body>
-  <!-- HEADER -->
-  <header class="site-header">
-    <div class="brand">
-      <img src="logo.png" alt="Champions Chess IFMA" class="logo">
-      <div>
-        <h1>Champions Chess <span class="accent">IFMA</span></h1>
-        <p class="subtitle">Instituto Federal do Maranhão</p>
-      </div>
+  <!-- NAVBAR (TOPBAR) -->
+  <nav class="tabs topbar" style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+    <div class="nav-left" style="display:flex;align-items:center;gap:10px">
+      <img src="logo.png" alt="Champions Chess IFMA" class="logo" style="width:36px;height:36px;border-radius:50%;object-fit:cover">
+      <strong>Champions Chess IFMA</strong>
     </div>
-
-    <div class="auth">
-      <div id="user-chip" class="chip hidden" title="Abrir perfil">
+  
+    <div class="nav-center" style="display:flex;gap:8px;flex:1;justify-content:center">
+      <button class="tab active" data-tab="home">Home</button>
+      <button class="tab" data-tab="regulamento">Regulamento</button>
+      <button class="tab" data-tab="partidas">Partidas</button>
+      <button class="tab" data-tab="tabela">Tabela</button>
+      <button class="tab" data-tab="players">Players</button>
+      <button class="tab" data-tab="posts">Post</button>
+      <button class="tab" data-tab="apostas">Apostas</button>
+      <button class="tab" data-tab="chat">Chat</button>
+      <button class="tab" data-tab="perfil">Perfil</button>
+      <button id="tab-admin" class="tab admin-only hidden" data-tab="admin">Admin</button>
+    </div>
+  
+    <div class="nav-right" style="display:flex;align-items:center;gap:8px">
+      <div id="user-chip" class="chip hidden" title="Abrir perfil" style="cursor:pointer">
         <span id="user-email"></span>
         <span id="admin-badge" class="badge hidden">ADMIN</span>
       </div>
       <button id="btn-open-login" class="btn ghost">Entrar com Google</button>
       <button id="btn-logout" class="btn danger hidden">Sair</button>
     </div>
-  </header>
-
-  <!-- NAVBAR (TOPBAR) -->
-  <nav class="tabs topbar">
-    <button class="tab active" data-tab="home">Home</button>
-    <button class="tab" data-tab="regulamento">Regulamento</button>
-    <button class="tab" data-tab="partidas">Partidas</button>
-    <button class="tab" data-tab="tabela">Tabela</button>
-    <button class="tab" data-tab="players">Players</button>
-    <button class="tab" data-tab="posts">Post</button>
-    <button class="tab" data-tab="apostas">Apostas</button>
-    <button class="tab" data-tab="chat">Chat</button>
-    <button class="tab" data-tab="perfil">Perfil</button>
-    <button id="tab-admin" class="tab admin-only hidden" data-tab="admin">Admin</button>
   </nav>
 
   <main class="container">
@@ -436,3 +432,4 @@
   <script type="module" src="app.js"></script>
 </body>
 </html>
+
