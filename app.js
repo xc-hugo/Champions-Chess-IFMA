@@ -1,4 +1,4 @@
-// app.js — Champions Chess IFMA (Google login only, Firestore)
+// app.js — Champions Chess IFMA
 
 import {
   auth, db,
@@ -7,7 +7,7 @@ import {
   onSnapshot, query, orderBy, where, serverTimestamp, runTransaction
 } from "./firebase.js";
 
-// ========== Helpers ==========
+/* ========================= Helpers ========================= */
 const $  = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
 
@@ -16,13 +16,32 @@ function showTab(id){
   $$(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === id));
   $$(".view").forEach(v => v.classList.toggle("visible", v.id === id));
   if(location.hash.replace("#","") !== id) location.hash = id;
+  // sempre ir pro topo para ver o título da aba
+  window.scrollTo({ top: 0, behavior: "smooth" });
 }
 window.addEventListener("hashchange", ()=> showTab(location.hash.replace("#","") || "home"));
 $$(".tab").forEach(b => b.onclick = () => showTab(b.dataset.tab));
 showTab(location.hash.replace("#","") || "home");
 
-function fmtDateStr(s){ return s ? new Date(s).toLocaleString("pt-BR") : "—"; }
 function option(el, value, label){ const o=document.createElement("option"); o.value=value; o.textContent=label; el.appendChild(o); }
+
+// Trata strings "YYYY-MM-DDTHH:mm" como horário LOCAL (sem fuso)
+function parseLocalDate(str){
+  if(!str) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(str);
+  if(!m) return null;
+  return new Date(+m[1], +m[2]-1, +m[3], +m[4], +m[5], 0, 0); // local
+}
+function fmtLocalDateStr(str){
+  const d = parseLocalDate(str);
+  return d ? d.toLocaleString("pt-BR") : "—";
+}
+function fmtTS(ts){
+  try{
+    const d = ts?.toDate ? ts.toDate() : (ts instanceof Date ? ts : (ts ? new Date(ts) : null));
+    return d ? d.toLocaleString("pt-BR") : "—";
+  }catch{ return "—"; }
+}
 
 function stageLabel(s){
   switch((s||"").toLowerCase()){
@@ -37,14 +56,12 @@ function stageLabel(s){
 function slugifyName(name){
   return (name || "")
     .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 20) || "user";
+    .toLowerCase().replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "").slice(0, 20) || "user";
 }
 function shortUid(uid){ return (uid || "").slice(-4) || Math.floor(Math.random()*9999).toString().padStart(4,"0"); }
 
-// ===== Scroll helper para o gerenciador de partidas =====
+// scroll helper pra gerenciador de partidas
 function scrollToManageMatches(){
   const target = document.querySelector("#admin-matches, #manage-matches, #match-form");
   if(!target) return;
@@ -52,23 +69,21 @@ function scrollToManageMatches(){
   const offset = (header ? header.offsetHeight : 0) + 12;
   const y = target.getBoundingClientRect().top + window.scrollY - offset;
   window.scrollTo({ top: y, behavior: "smooth" });
-
-  // foco no primeiro campo útil
   setTimeout(()=>{
     const focusable = target.querySelector("select, input, textarea, button");
     focusable && focusable.focus();
   }, 300);
 }
-function ensureAndScrollToManage(){ // espera render se necessário
+function ensureAndScrollToManage(){
   let tries = 0;
-  const tick = setInterval(()=>{
+  const t = setInterval(()=>{
     const ok = document.querySelector("#admin-matches, #manage-matches, #match-form");
-    if(ok){ clearInterval(tick); scrollToManageMatches(); }
-    if(++tries > 20) clearInterval(tick); // ~1s
+    if(ok){ clearInterval(t); scrollToManageMatches(); }
+    if(++tries > 20) clearInterval(t);
   }, 50);
 }
 
-// ========== Estado ==========
+/* ========================= Estado ========================= */
 let state = {
   user: null,
   admin: false,
@@ -79,14 +94,16 @@ let state = {
   chat: []
 };
 
-// ========== Auth ==========
+// guarda último resultado conhecido pra anunciar vit/emp/der
+const prevResults = new Map();
+
+/* ========================= Auth ========================= */
 $("#btn-open-login")?.addEventListener("click", async ()=>{
   try { await loginWithGoogle(); }
   catch(err){ alert("Erro ao entrar com Google: " + err.message); }
 });
 $("#btn-logout")?.addEventListener("click", async ()=> { await logout(); });
 
-// Perfil (profiles/{uid})
 async function loadProfile(uid){
   if(!uid){ state.profile=null; renderProfile(); return; }
   const snap = await getDoc(doc(db,"profiles",uid));
@@ -94,7 +111,7 @@ async function loadProfile(uid){
   renderProfile();
 }
 
-// ===== Admin realtime toggle + timer do adiamento =====
+/* ===== Admin realtime + timer de adiamento ===== */
 let unsubscribeAdminWatch = null;
 let postponeTimer = null;
 
@@ -105,7 +122,6 @@ function scheduleAutoPostponeTimer(enabled){
     autoPostponeOverdueMatches();
   }
 }
-
 function setAdminFlag(flag){
   const changed = state.admin !== flag;
   state.admin = flag;
@@ -113,12 +129,10 @@ function setAdminFlag(flag){
   $("#tab-admin")?.classList.toggle("hidden", !flag);
   $$(".admin-only").forEach(el => el.classList.toggle("hidden", !flag));
   scheduleAutoPostponeTimer(flag);
-  if (changed) {
-    renderPosts(); renderChat(); renderMatches(); renderHome(); renderAdminSemisList();
-  }
+  if (changed) { renderPosts(); renderChat(); renderMatches(); renderHome(); renderAdminSemisList(); }
 }
 
-// === Corrige transação (todas leituras antes de qualquer escrita) ===
+// perfil + username único (correção de transação: todas leituras antes das escritas)
 $("#profile-form")?.addEventListener("submit", async (e)=>{
   e.preventDefault();
   if(!state.user) return alert("Entre para editar o perfil.");
@@ -131,7 +145,7 @@ $("#profile-form")?.addEventListener("submit", async (e)=>{
     await runTransaction(db, async (tx)=>{
       const uid = state.user.uid;
 
-      // --- LEITURAS ---
+      // leituras
       const profRef = doc(db, "profiles", uid);
       const profSnap = await tx.get(profRef);
       const oldUsername = profSnap.exists() ? (profSnap.data().username || null) : null;
@@ -154,16 +168,12 @@ $("#profile-form")?.addEventListener("submit", async (e)=>{
         oldSnap = await tx.get(oldRef);
       }
 
-      // --- ESCRITAS (só agora pode escrever) ---
+      // escritas
       if(oldRef && oldSnap?.exists() && oldSnap.data().uid === uid){
         tx.delete(oldRef);
       }
-
-      if(chosen === base){
-        tx.set(tryRef, { uid, createdAt: serverTimestamp() });
-      }else{
-        tx.set(fbRef, { uid, createdAt: serverTimestamp() });
-      }
+      if(chosen === base) tx.set(tryRef, { uid, createdAt: serverTimestamp() });
+      else                tx.set(fbRef,  { uid, createdAt: serverTimestamp() });
 
       tx.set(profRef, {
         displayName: display,
@@ -189,7 +199,7 @@ $("#profile-form")?.addEventListener("submit", async (e)=>{
   }
 });
 
-// Login/out watcher
+// watch auth
 watchAuth(async (user)=>{
   state.user = user;
 
@@ -204,7 +214,6 @@ watchAuth(async (user)=>{
   await loadProfile(user?.uid || null);
 
   setAdminFlag(false);
-
   if (unsubscribeAdminWatch) unsubscribeAdminWatch();
   if (user) {
     const adminRef = doc(db, "admins", user.uid);
@@ -217,7 +226,7 @@ watchAuth(async (user)=>{
   renderPosts(); renderChat(); renderMatches(); renderHome(); renderAdminSemisList();
 });
 
-// ========== Firestore listeners ==========
+/* ========================= Firestore listeners ========================= */
 const colPlayers = collection(db, "players");
 const colMatches = collection(db, "matches");
 const colPosts   = collection(db, "posts");
@@ -227,15 +236,43 @@ onSnapshot(query(colPlayers, orderBy("name")), snap=>{
   state.players = snap.docs.map(d => ({ id:d.id, ...d.data() }));
   renderPlayers(); fillPlayersSelects(); renderTables(); renderPlayerSelect(); renderHome(); renderAdminSemisList();
 });
-onSnapshot(query(colMatches, orderBy("date")), snap=>{
-  state.matches = snap.docs.map(d => ({ id:d.id, ...d.data() }));
+
+onSnapshot(query(colMatches, orderBy("date")), async (snap)=>{
+  const newMatches = snap.docs.map(d => ({ id:d.id, ...d.data() }));
+  // anunciar vit/emp/der automaticamente (diff com prevResults)
+  const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
+  for(const m of newMatches){
+    const old = prevResults.get(m.id);
+    const now = m.result;
+    const wasFinal   = old === "A" || old === "B" || old === "draw";
+    const isNowFinal = now === "A" || now === "B" || now === "draw";
+    if(!wasFinal && isNowFinal){
+      const aName = mapP[m.aId] || "?";
+      const bName = mapP[m.bId] || "?";
+      let title = "", body = "";
+      if(now === "A"){ title = `Vitória de ${aName} (${m.code||""})`; body = `${aName} venceu ${bName} ${m.group?`(Grupo ${m.group}) `:""}na ${stageLabel(m.stage)}.`; }
+      if(now === "B"){ title = `Vitória de ${bName} (${m.code||""})`; body = `${bName} venceu ${aName} ${m.group?`(Grupo ${m.group}) `:""}na ${stageLabel(m.stage)}.`; }
+      if(now === "draw"){ title = `Empate: ${aName} × ${bName} (${m.code||""})`; body = `${aName} e ${bName} empataram ${m.group?`(Grupo ${m.group}) `:""}na ${stageLabel(m.stage)}.`; }
+      try{
+        await addDoc(colPosts, { title, body, createdAt: serverTimestamp(), author:"Sistema", authorEmail:"" });
+      }catch{}
+    }
+  }
+  // atualiza cache
+  prevResults.clear(); newMatches.forEach(m => prevResults.set(m.id, m.result || null));
+
+  state.matches = newMatches;
   renderMatches(); renderTables(); renderPlayerDetails(); renderHome(); renderAdminSemisList();
-  autoPostponeOverdueMatches(); // checa sempre que mudar
+
+  autoPostponeOverdueMatches();        // adiar 24h após data
+  checkAndAutoCreateSemis();           // criar semis + post quando F. Grupos terminar
 });
+
 onSnapshot(query(colPosts, orderBy("createdAt","desc")), snap=>{
   state.posts = snap.docs.map(d => ({ id:d.id, ...d.data() }));
   renderPosts(); renderHome();
 });
+
 onSnapshot(query(colChat, orderBy("createdAt","desc")), snap=>{
   const now = Date.now();
   state.chat = snap.docs
@@ -244,7 +281,7 @@ onSnapshot(query(colChat, orderBy("createdAt","desc")), snap=>{
   renderChat();
 });
 
-// ========== Estatísticas (3/1/0 nos grupos) ==========
+/* ========================= Lógicas de pontos ========================= */
 function statsFromMatches(){
   const stats = {};
   for(const p of state.players){
@@ -267,22 +304,23 @@ function statsFromMatches(){
   return stats;
 }
 
-// ========== Home (4 próximas de hoje/próximo dia) ==========
+/* ========================= Home (4 próximas do dia) ========================= */
 function renderHome(){
   const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
   const scheduled = state.matches.filter(m => !!m.date).slice();
-  const today = new Date(); const start = new Date(today); start.setHours(0,0,0,0);
-  const end   = new Date(today); end.setHours(23,59,59,999);
-  const isSameDay = (a,b)=> a.getFullYear()==b.getFullYear() && a.getMonth()==b.getMonth() && a.getDate()==b.getDate();
 
-  let pick = scheduled.filter(m=>{ const d = new Date(m.date); return d>=start && d<=end; });
+  const today = new Date(); const s = new Date(today); s.setHours(0,0,0,0);
+  const e   = new Date(today); e.setHours(23,59,59,999);
+  const isSameDay = (d1,d2)=> d1.getFullYear()==d2.getFullYear() && d1.getMonth()==d2.getMonth() && d1.getDate()==d2.getDate();
+
+  let pick = scheduled.filter(m=>{ const d = parseLocalDate(m.date); return d && d>=s && d<=e; });
   if(pick.length===0){
     let nextDay = null;
     for(const m of scheduled){
-      const d = new Date(m.date);
-      if(d > end){ nextDay = d; break; }
+      const d = parseLocalDate(m.date);
+      if(d && d > e){ nextDay = d; break; }
     }
-    if(nextDay){ pick = scheduled.filter(m => isSameDay(new Date(m.date), nextDay)); }
+    if(nextDay){ pick = scheduled.filter(m => { const d=parseLocalDate(m.date); return d && isSameDay(d, nextDay); }); }
   }
   pick = pick.slice(0,4);
 
@@ -291,7 +329,7 @@ function renderHome(){
       <td>${stageLabel(m.stage)}</td>
       <td>${m.group || "-"}</td>
       <td>${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}</td>
-      <td>${fmtDateStr(m.date)}</td>
+      <td>${fmtLocalDateStr(m.date)}</td>
       <td>${m.code || "-"}</td>
     </tr>
   `).join("");
@@ -300,7 +338,7 @@ function renderHome(){
       <thead><tr><th>Etapa</th><th>Grupo</th><th>Partida</th><th>Data</th><th>Código</th></tr></thead>
       <tbody>${rows || "<tr><td colspan='5'>Sem partidas hoje/próximo dia.</td></tr>"}</tbody>
     </table>`;
-  if($("#home-next")) $("#home-next").innerHTML = table;
+  $("#home-next") && ($("#home-next").innerHTML = table);
 
   const posts = state.posts.slice(0,3).map(p=> renderPostItem(p)).join("");
   if($("#home-posts")) {
@@ -317,7 +355,7 @@ function renderHome(){
   }
 }
 
-// ========== Players ==========
+/* ========================= Players ========================= */
 function renderPlayers(){
   const stats = statsFromMatches();
   const byGroup = { A:[], B:[] };
@@ -334,8 +372,8 @@ function renderPlayers(){
       </div>`;
     (byGroup[p.group] || byGroup.A).push(card);
   }
-  if($("#players-cards-A")) $("#players-cards-A").innerHTML = byGroup.A.join("") || `<p class="muted">Sem jogadores.</p>`;
-  if($("#players-cards-B")) $("#players-cards-B").innerHTML = byGroup.B.join("") || `<p class="muted">Sem jogadores.</p>`;
+  $("#players-cards-A") && ($("#players-cards-A").innerHTML = byGroup.A.join("") || `<p class="muted">Sem jogadores.</p>`);
+  $("#players-cards-B") && ($("#players-cards-B").innerHTML = byGroup.B.join("") || `<p class="muted">Sem jogadores.</p>`);
 
   $$("#players-cards-A .player-card, #players-cards-B .player-card").forEach(c=>{
     c.onclick = ()=>{
@@ -382,7 +420,7 @@ function renderPlayerDetails(){
   `;
 }
 
-// ========== Tabela ==========
+/* ========================= Tabela ========================= */
 function renderTables(){
   const stats = statsFromMatches();
   const groups = {A:[], B:[]};
@@ -414,7 +452,7 @@ function renderTables(){
   });
 }
 
-// ========== Partidas ==========
+/* ========================= Partidas ========================= */
 function renderMatches(){
   const stageF = $("#filter-stage")?.value || "all";
   const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
@@ -440,7 +478,7 @@ function renderMatches(){
             <td>${stageLabel(m.stage)}</td>
             <td>${m.group||"-"}</td>
             <td>${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}</td>
-            <td>${fmtDateStr(m.date)}</td>
+            <td>${fmtLocalDateStr(m.date)}</td>
             <td>${m.code||"-"}</td>
             <td>${res}</td>
             ${state.admin?`<td><button class="btn ghost btn-edit" data-id="${m.id}">Editar</button></td>`:""}
@@ -473,25 +511,25 @@ function renderMatches(){
 }
 $("#filter-stage")?.addEventListener("change", renderMatches);
 
-// ===== Adiamento automático (24h após a data) =====
+/* ===== Adiamento automático (24h após a data) ===== */
 async function autoPostponeOverdueMatches(){
-  if(!state.admin) return; // apenas admin altera
+  if(!state.admin) return;
   const now = Date.now();
   const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
-
   const tasks = [];
+
   for(const m of state.matches){
     if(!m?.date) continue;
     if(m?.result) continue; // já decidido
-    const due = new Date(m.date).getTime() + 24*60*60*1000; // +24h
+    const due = (parseLocalDate(m.date)?.getTime() || 0) + 24*60*60*1000;
     if(now >= due){
       tasks.push(runTransaction(db, async (tx)=>{
         const ref = doc(db,"matches", m.id);
         const snap = await tx.get(ref);
         if(!snap.exists()) return;
         const cur = snap.data();
-        if(cur.result) return;                  // já decidiram
-        if(cur.postponedNotice) return;         // já notificado
+        if(cur.result) return;
+        if(cur.postponedNotice) return;
 
         tx.update(ref, {
           result: "postponed",
@@ -503,7 +541,7 @@ async function autoPostponeOverdueMatches(){
         const aName = mapP[cur.aId] || "?";
         const bName = mapP[cur.bId] || "?";
         const title = `Partida adiada: ${aName} × ${bName}`;
-        const body  = `A partida ${cur.code ? `(${cur.code}) ` : ""}${aName} × ${bName}, marcada para ${fmtDateStr(cur.date)}, foi automaticamente marcada como **ADIADA** por falta de atualização do resultado após 24 horas. Favor remarcar com a organização.`;
+        const body  = `A partida ${cur.code ? `(${cur.code}) ` : ""}${aName} × ${bName}, marcada para ${fmtLocalDateStr(cur.date)}, foi automaticamente marcada como **ADIADA** por falta de atualização do resultado após 24 horas. Favor remarcar com a organização.`;
         tx.set(postsRef, { title, body, createdAt: serverTimestamp(), author: "Sistema", authorEmail: "" });
       }));
     }
@@ -511,7 +549,44 @@ async function autoPostponeOverdueMatches(){
   if(tasks.length) await Promise.allSettled(tasks);
 }
 
-// ========== Admin: Players ==========
+/* ===== Semifinais automáticas ao concluir F. Grupos + post ===== */
+async function checkAndAutoCreateSemis(){
+  // precisa estar tudo concluído na F. Grupos (A/B/draw); 'postponed' NÃO conta
+  const groupMatches = state.matches.filter(m => m.stage==="groups");
+  if(groupMatches.length === 0) return;
+
+  const allDone = groupMatches.every(m => ["A","B","draw"].includes(m.result));
+  if(!allDone) return;
+
+  const existingSemis = state.matches.filter(m => m.stage==="semifinal");
+  if(existingSemis.length >= 2) return; // já existem
+
+  // monta top-2 por grupo
+  const stats = statsFromMatches();
+  const byGroup = { A:[], B:[] };
+  Object.values(stats).forEach(s => (byGroup[s.group]||[]).push(s));
+  const sort = a=>a.sort((x,y)=> y.points-x.points || y.wins-x.wins || x.name.localeCompare(y.name));
+  sort(byGroup.A); sort(byGroup.B);
+  const a1 = byGroup.A[0], a2 = byGroup.A[1], b1 = byGroup.B[0], b2 = byGroup.B[1];
+  if(!(a1 && a2 && b1 && b2)) return;
+
+  // cria semis + post
+  const pairs = [
+    { a:a1.id, b:b2.id, code:"SF-1" },
+    { a:b1.id, b:a2.id, code:"SF-2" },
+  ];
+  const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
+  for(const p of pairs){
+    await addDoc(collection(db,"matches"), {
+      aId:p.a, bId:p.b, stage:"semifinal", date:null, group:null, code:p.code, result:null
+    });
+  }
+  const title = `Semifinais definidas`;
+  const body  = `Semifinal 1: ${mapP[a1.id]} × ${mapP[b2.id]} (SF-1)\nSemifinal 2: ${mapP[b1.id]} × ${mapP[a2.id]} (SF-2). Boa sorte!`;
+  await addDoc(collection(db,"posts"), { title, body, createdAt: serverTimestamp(), author:"Sistema", authorEmail:"" });
+}
+
+/* ========================= Admin: Players ========================= */
 function fillPlayersSelects(){
   const selects = ["match-a","match-b","semi1-a","semi1-b","semi2-a","semi2-b"];
   selects.forEach(id=>{
@@ -524,7 +599,6 @@ function fillPlayersSelects(){
   const listSel = $("#player-select");
   if(listSel && !listSel.value) renderPlayerSelect();
 }
-
 $("#player-form")?.addEventListener("submit", async (e)=>{
   e.preventDefault();
   const id = $("#player-id").value;
@@ -543,7 +617,7 @@ $("#player-delete")?.addEventListener("click", async ()=>{
   $("#player-form").reset(); $("#player-id").value = "";
 });
 
-// ========== Admin: Matches ==========
+/* ========================= Admin: Matches ========================= */
 async function loadMatchToForm(id){
   const m = state.matches.find(x=>x.id===id);
   if(!m) return;
@@ -561,7 +635,7 @@ async function loadMatchToForm(id){
   $("#match-result").value = m.result || "";
 
   showTab("partidas");
-  ensureAndScrollToManage(); // 🔽 garante scroll até o gerenciador
+  ensureAndScrollToManage();
 }
 $("#match-reset")?.addEventListener("click", ()=>{ $("#match-form").reset(); $("#match-id").value=""; $("#match-date").dataset.dirty="false"; });
 $("#match-delete")?.addEventListener("click", async ()=>{
@@ -580,15 +654,11 @@ $("#match-form")?.addEventListener("submit", async (e)=>{
     code: $("#match-code").value || null,
     result: $("#match-result").value || null
   };
-
   const isEdit = !!$("#match-id").value;
   const dateDirty = $("#match-date").dataset.dirty === "true";
   const dateVal = $("#match-date").value || null;
-  if(!isEdit){
-    payload.date = dateVal;
-  }else if(dateDirty){
-    payload.date = dateVal;
-  }
+  if(!isEdit){ payload.date = dateVal; }
+  else if(dateDirty){ payload.date = dateVal; }
 
   try{
     const id = $("#match-id").value;
@@ -598,15 +668,14 @@ $("#match-form")?.addEventListener("submit", async (e)=>{
   }catch(err){ alert("Erro: "+err.message); }
 });
 
-// ========== Posts (com e-mail, admin pode apagar) ==========
+/* ========================= Posts ========================= */
 $("#post-form")?.addEventListener("submit", async (e)=>{
   e.preventDefault();
   const title = $("#post-title").value.trim();
   const body  = $("#post-body").value.trim();
   try{
     await addDoc(collection(db,"posts"), {
-      title,
-      body,
+      title, body,
       createdAt: serverTimestamp(),
       author: state.profile?.displayName || auth.currentUser?.displayName || auth.currentUser?.email || "admin",
       authorEmail: auth.currentUser?.email || ""
@@ -621,7 +690,7 @@ function renderPostItem(p){
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
         <div>
           <h3>${p.title}</h3>
-          <p class="muted" style="margin-top:-6px">${by} · ${p.createdAt?.toDate ? p.createdAt.toDate().toLocaleString("pt-BR") : ""}</p>
+          <p class="muted" style="margin-top:-6px">${by} · ${fmtTS(p.createdAt)}</p>
           <p>${(p.body||"").replace(/\n/g,"<br>")}</p>
         </div>
         ${state.admin ? `<button class="btn danger small btn-del-post" data-id="${p.id}">Apagar</button>` : ""}
@@ -645,7 +714,7 @@ function renderPosts(){
   }
 }
 
-// ========== Chat (com e-mail, admin pode apagar; expira 24h) ==========
+/* ========================= Chat ========================= */
 $("#chat-form")?.addEventListener("submit", async (e)=>{
   e.preventDefault();
   if(!auth.currentUser){ alert("Entre para enviar mensagens."); return; }
@@ -664,13 +733,12 @@ $("#chat-form")?.addEventListener("submit", async (e)=>{
 });
 function renderChat(){
   const html = state.chat.map(m=>{
-    const when = m.createdAt?.toDate ? m.createdAt.toDate().toLocaleString("pt-BR") : "";
     const who = m.username ? `${m.author} (@${m.username})` : m.author;
     const by  = `${m.authorEmail || ""} — ${who}`;
     return `<div class="chat-item" data-id="${m.id}">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
         <div>
-          <div class="meta">${by} · ${when}</div>
+          <div class="meta">${by} · ${fmtTS(m.createdAt)}</div>
           <div>${(m.text||"").replace(/\n/g,"<br>")}</div>
         </div>
         ${state.admin ? `<button class="btn danger small btn-del-chat" data-id="${m.id}">Apagar</button>` : ""}
@@ -691,7 +759,7 @@ function renderChat(){
   }
 }
 
-// ========== Perfil ==========
+/* ========================= Perfil ========================= */
 function renderProfile(){
   if(!$("#profile-form")) return;
   const u = state.user;
@@ -702,7 +770,7 @@ function renderProfile(){
   if(el) el.textContent = userTag;
 }
 
-// ========== Admin: Semifinais ==========
+/* ========================= Admin: Semifinais ========================= */
 $("#semi-autofill")?.addEventListener("click", ()=>{
   const stats = statsFromMatches();
   const groups = {A:[], B:[]};
@@ -731,7 +799,7 @@ function renderAdminSemisList(){
   const rows = list.map(m=>`
     <tr>
       <td>${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}</td>
-      <td>${fmtDateStr(m.date)}</td>
+      <td>${fmtLocalDateStr(m.date)}</td>
       <td>${m.code||"-"}</td>
       <td>${m.result||"Pendente"}</td>
     </tr>
@@ -741,14 +809,35 @@ function renderAdminSemisList(){
       <thead><tr><th>Semifinal</th><th>Data</th><th>Código</th><th>Resultado</th></tr></thead>
       <tbody>${rows || "<tr><td colspan='4'>Nenhuma semifinal cadastrada.</td></tr>"}</tbody>
     </table>`;
-  if($("#semi-list")) $("#semi-list").innerHTML = html;
+  $("#semi-list") && ($("#semi-list").innerHTML = html);
 }
 
-// ========== Seed (admin) ==========
+/* ========================= Admin: Reset Torneio ========================= */
+$("#btn-reset-tournament")?.addEventListener("click", async ()=>{
+  if(!state.admin) return alert("Apenas admins.");
+  if(!confirm("Tem certeza que deseja RESETAR o torneio? (apaga partidas, posts e chat)")) return;
+
+  async function wipe(colName){
+    const snap = await getDocs(collection(db, colName));
+    const ops = snap.docs.map(d => deleteDoc(doc(db, colName, d.id)));
+    await Promise.allSettled(ops);
+  }
+  try{
+    await wipe("matches");
+    await wipe("posts");
+    await wipe("chat");
+    alert("Torneio resetado! (Players foram mantidos)");
+  }catch(err){
+    alert("Erro ao resetar: " + err.message);
+  }
+});
+
+/* ========================= Seed (Admin) ========================= */
 $("#seed-btn")?.addEventListener("click", async ()=>{
   if(!state.admin){ alert("Apenas admins."); return; }
   if(!confirm("Adicionar dados de exemplo?")) return;
 
+  // players
   const players = [
     ["Hugo","A"],["Eudison","A"],["Rhuan","A"],["Luís Felipe","A"],["Yuri","A"],
     ["Kelvin","B"],["Marcos","B"],["Davi","B"],["Alyson","B"],["Wemerson","B"]
@@ -760,8 +849,12 @@ $("#seed-btn")?.addEventListener("click", async ()=>{
     else { nameToId[name] = q.docs[0].id; }
   }
 
-  const now = new Date();
-  const base = (h)=>{ const d=new Date(now.getTime()+h*3600000); return d.toISOString().slice(0,16); };
+  // gera string local "YYYY-MM-DDTHH:mm"
+  const pad = n => String(n).padStart(2,"0");
+  function localStrPlusHours(h){
+    const d = new Date(); d.setHours(d.getHours()+h);
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
 
   const roundsA = [
     ["Eudison","Yuri"],["Rhuan","Luís Felipe"],
@@ -782,13 +875,13 @@ $("#seed-btn")?.addEventListener("click", async ()=>{
   for(const [a,b] of roundsA){
     await addDoc(collection(db,"matches"),{
       aId:nameToId[a], bId:nameToId[b], stage:"groups", group:"A",
-      date: base(i++), code:`GA-${i}`, result:null
+      date: localStrPlusHours(i++), code:`GA-${i}`, result:null
     });
   }
   for(const [a,b] of roundsB){
     await addDoc(collection(db,"matches"),{
       aId:nameToId[a], bId:nameToId[b], stage:"groups", group:"B",
-      date: base(i++), code:`GB-${i}`, result:null
+      date: localStrPlusHours(i++), code:`GB-${i}`, result:null
     });
   }
 
