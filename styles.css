@@ -1,6 +1,6 @@
 :root{
   --bg:#0b0f13; --elev:#12171d; --card:#161d25; --text:#e8edf2; --muted:#8ea0b3;
-  --accent:#2bb673; --accent-2:#0b5ed7; --danger:#e24a4a;
+  --accent:#2bb673; --danger:#e24a4a;
   --shadow:0 10px 24px rgba(0,0,0,.25); --radius:16px;
 }
 
@@ -51,13 +51,14 @@ h1{font-size:20px;margin:0}.subtitle{margin:2px 0 0;color:var(--muted);font-size
 .player-card.selected{outline:2px solid var(--accent)}
 .avatar{width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#0e141b;border:1px solid #1f2630;font-weight:800;color:#cde6d7}
 .player-meta{line-height:1.2}.player-meta .name{font-weight:800}.player-meta .muted{font-size:12px}
+.pill{display:inline-block;padding:6px 10px;border-radius:999px;background:#10202a;border:1px solid #1f3631;margin:4px 6px 0 0;font-size:12px;color:#cde6d7}
 
 /* Posts */
 .posts .post{display:flex;gap:12px;padding:22px 0;border-bottom:1px solid #202a39}
 .home-posts{margin-top:18px}
 
 /* Chat */
-.chat-list{display:flex;flex-direction:column;gap:12px;max-height:380px;overflow:auto;padding:12px;background:#0e141b;border:1px solid #1f2630;border-radius:12px}
+.chat-list{display:flex;flex-direction:column;gap:14px;max-height:380px;overflow:auto;padding:12px;background:#0e141b;border:1px solid #1f2630;border-radius:12px}
 .chat-item{background:#101720;border:1px solid #1f2630;border-radius:10px;padding:10px 12px}
 .chat-item .meta{color:#8ea0b3;font-size:12px}
 
@@ -73,32 +74,28 @@ h1{font-size:20px;margin:0}.subtitle{margin:2px 0 0;color:var(--muted);font-size
 .btn.ghost{background:#0e141b;color:#cde6d7;border:1px solid #1f2630}
 .btn.danger{background:var(--danger);color:#fff}
 .btn.small{ padding: 6px 10px; border-radius: 8px; font-weight: 700; }
-.btn:disabled{opacity:.6;cursor:none}
+.btn:disabled{opacity:.6;cursor:not-allowed}
 
-/* PDF */
 .pdf-wrap{border-radius:12px;overflow:hidden;border:1px solid #1f2630;background:#0e141b}
 .cta-row{display:flex;gap:10px;margin-top:10px}
 
-/* Footer */
 .site-footer{padding:20px;text-align:center;color:#8ea0b3}
-
-/* Modal (se usar) */
-.modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center}
-.modal.hidden{display:none}
-.modal-content{position:relative;width:min(520px,92%);background:var(--card);border:1px solid #1f2630;border-radius:16px;padding:20px;box-shadow:var(--shadow)}
-.close{position:absolute;right:10px;top:10px;background:#0e141b;border:1px solid #243041;color:#cde6d7;border-radius:999px;width:28px;height:28px;cursor:pointer}
 
 .chip{background:#10202a;color:#cde6d7;border:1px solid #1f3631;padding:6px 10px;border-radius:999px}
 .badge{margin-left:8px;background:#61481c;color:#ffd8a8;padding:3px 7px;border-radius:999px;font-weight:800;font-size:11px}
 .hidden{display:none !important}
-.auth-toggle{display:flex;gap:8px;margin-bottom:8px}
 
-/* ==== AJUSTES PEDIDOS ==== */
-/* 1) Aumentar padding/espaçamento entre caixas nas abas */
-#partidas .card, #posts .card, #players .card, #chat .card { margin-bottom: 22px; }
-#partidas .card:last-child, #posts .card:last-child, #players .card:last-child, #chat .card:last-child { margin-bottom: 0; }
+/* ===== Melhorias pedidas ===== */
 
-/* 2) Campo de pesquisa (Players) aprimorado */
+/* Mais espaçamento entre caixas nas abas */
+#partidas > .card, #posts > .card, #players > .card, #chat > .card { margin-bottom: 22px; }
+#partidas > .card:last-child, #posts > .card:last-child,
+#players > .card:last-child, #chat > .card:last-child { margin-bottom: 0; }
+
+/* Se houver cards aninhados em partidas (lista renderizada) */
+#matches-list .card { margin-bottom: 22px; }
+
+/* Campo de pesquisa estilizado */
 #player-search{
   border-radius: 999px;
   padding: 12px 14px;
@@ -114,7 +111,7 @@ h1{font-size:20px;margin:0}.subtitle{margin:2px 0 0;color:var(--muted);font-size
   box-shadow: 0 0 0 3px rgba(43,182,115,.25);
 }
 
-/* 3) Botão de buscar aprimorado */
+/* Botão de buscar aprimorado */
 #player-search-btn{
   border-radius: 999px;
   padding: 12px 16px;
@@ -122,7 +119,7 @@ h1{font-size:20px;margin:0}.subtitle{margin:2px 0 0;color:var(--muted);font-size
 }
 #player-search-btn::before{ content: "🔎 "; }
 
-/* 4) Select “Selecionar Jogador” mais bonito */
+/* Select “Selecionar Jogador” mais bonito */
 #player-select{
   appearance: none;
   border-radius: 12px;
