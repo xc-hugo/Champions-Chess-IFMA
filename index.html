@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Champions Chess IFMA</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="brand">
+      <img src="logo.png" alt="Champions Chess IFMA" class="logo">
+      <div>
+        <h1>Champions Chess <span class="accent">IFMA</span></h1>
+        <p class="subtitle">Instituto Federal do Maranhão</p>
+      </div>
+    </div>
+
+    <div class="auth">
+      <div id="user-chip" class="chip hidden">
+        <span id="user-email"></span>
+        <span id="admin-badge" class="badge hidden">ADMIN</span>
+      </div>
+      <button id="btn-open-login" class="btn ghost">Entrar</button>
+      <button id="btn-logout" class="btn danger hidden">Sair</button>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="regulamento">Regulamento</button>
+    <button class="tab" data-tab="partidas">Partidas</button>
+    <button class="tab" data-tab="tabela">Tabela</button>
+    <button class="tab" data-tab="players">Players</button>
+    <button class="tab" data-tab="posts">Post</button>
+    <button class="tab" data-tab="sobre">Sobre</button>
+    <button id="tab-admin" class="tab admin-only hidden" data-tab="admin">Admin</button>
+  </nav>
+
+  <main class="container">
+    <!-- REGULAMENTO -->
+    <section id="regulamento" class="view visible">
+      <div class="grid-2">
+        <div class="card">
+          <h2>Regulamento</h2>
+          <ul class="list">
+            <li>10 jogadores divididos em 2 grupos de 5; todos jogam entre si dentro do grupo.</li>
+            <li>Pontuação fase de grupos: vitória 3, empate 1, derrota 0.</li>
+            <li>Classificam-se os 2 melhores (G2) de cada grupo.</li>
+            <li>Semifinais: 1ºA × 2ºB e 1ºB × 2ºA; depois Final e 3º lugar.</li>
+            <li>Partidas monitoradas com registro em print e validação.</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <h2>PDF (pré-visualização)</h2>
+          <div class="pdf-wrap">
+            <object data="ChampionsChessIFMA.pdf" type="application/pdf" width="100%" height="540">
+              <p>Seu navegador não exibiu o PDF.
+                <a class="btn" href="ChampionsChessIFMA.pdf" target="_blank" rel="noopener">Abrir PDF</a>
+              </p>
+            </object>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- PARTIDAS -->
+    <section id="partidas" class="view">
+      <div class="card">
+        <div class="title-row">
+          <h2>Partidas (fase de grupos & mata-mata)</h2>
+          <div class="filters">
+            <select id="filter-stage">
+              <option value="all">Todas</option>
+              <option value="groups">Fase de Grupos</option>
+              <option value="semifinal">Semifinais</option>
+              <option value="final">Final</option>
+              <option value="third">3º Lugar</option>
+            </select>
+            <select id="filter-group">
+              <option value="all">Grupos A + B</option>
+              <option value="A">Grupo A</option>
+              <option value="B">Grupo B</option>
+            </select>
+          </div>
+        </div>
+        <div id="matches-list" class="table"></div>
+      </div>
+
+      <div id="admin-matches" class="card admin-only hidden">
+        <h3>Gerenciar Partidas</h3>
+        <form id="match-form" class="form">
+          <input type="hidden" id="match-id" />
+          <div class="row">
+            <label>Jogador A</label>
+            <select id="match-a" required></select>
+            <label>Jogador B</label>
+            <select id="match-b" required></select>
+          </div>
+          <div class="row">
+            <label>Grupo/Etapa</label>
+            <select id="match-stage">
+              <option value="groups">Fase de Grupos</option>
+              <option value="semifinal">Semifinal</option>
+              <option value="final">Final</option>
+              <option value="third">3º Lugar</option>
+            </select>
+            <label>Grupo (A/B)</label>
+            <select id="match-group">
+              <option value="">—</option>
+              <option value="A">A</option>
+              <option value="B">B</option>
+            </select>
+          </div>
+          <div class="row">
+            <label>Data/Hora</label>
+            <input id="match-date" type="datetime-local" required />
+            <label>Código da partida</label>
+            <input id="match-code" placeholder="ex.: SF1-IFMA" />
+          </div>
+          <div class="row">
+            <label>Resultado</label>
+            <select id="match-result">
+              <option value="">Pendente</option>
+              <option value="A">Vitória Jogador A</option>
+              <option value="B">Vitória Jogador B</option>
+              <option value="draw">Empate</option>
+            </select>
+          </div>
+          <div class="row end">
+            <button type="submit" class="btn">Salvar</button>
+            <button id="match-reset" type="button" class="btn ghost">Limpar</button>
+            <button id="match-delete" type="button" class="btn danger">Excluir</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- TABELA -->
+    <section id="tabela" class="view">
+      <div class="grid-2">
+        <div class="card">
+          <h2>Tabela – Grupo A</h2>
+          <div id="table-A" class="table"></div>
+        </div>
+        <div class="card">
+          <h2>Tabela – Grupo B</h2>
+          <div id="table-B" class="table"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- PLAYERS -->
+    <section id="players" class="view">
+      <div class="grid-2">
+        <div class="card">
+          <h2>Jogadores</h2>
+          <div id="players-list" class="table"></div>
+        </div>
+
+        <div class="card">
+          <h2>Detalhes do Jogador</h2>
+          <div class="row">
+            <select id="player-select"></select>
+          </div>
+          <div id="player-details" class="player-details"></div>
+        </div>
+      </div>
+
+      <div id="admin-players" class="card admin-only hidden">
+        <h3>Gerenciar Jogadores</h3>
+        <form id="player-form" class="form">
+          <input type="hidden" id="player-id" />
+          <div class="row">
+            <label>Nome</label>
+            <input id="player-name" required />
+            <label>Grupo</label>
+            <select id="player-group" required>
+              <option value="A">A</option>
+              <option value="B">B</option>
+            </select>
+          </div>
+          <div class="row end">
+            <button class="btn" type="submit">Salvar</button>
+            <button id="player-reset" class="btn ghost" type="button">Limpar</button>
+            <button id="player-delete" class="btn danger" type="button">Excluir</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- POSTS -->
+    <section id="posts" class="view">
+      <div class="card">
+        <h2>Comunicados</h2>
+        <div id="posts-list" class="posts"></div>
+      </div>
+
+      <div id="admin-posts" class="card admin-only hidden">
+        <h3>Novo Comunicado</h3>
+        <form id="post-form" class="form">
+          <div class="row">
+            <label>Título</label>
+            <input id="post-title" required />
+          </div>
+          <div class="row">
+            <label>Mensagem</label>
+            <textarea id="post-body" rows="4" required></textarea>
+          </div>
+          <div class="row end">
+            <button class="btn" type="submit">Publicar</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- SOBRE -->
+    <section id="sobre" class="view">
+      <div class="card">
+        <h2>Sobre o Torneio</h2>
+        <p>O Champions Chess IFMA promove integração, raciocínio lógico e espírito esportivo entre os estudantes. Este site exibe tabela, partidas, regulamento e comunicados. A área de administração permite controlar datas, resultados, informações dos jogadores e as semifinais.</p>
+        <ul class="list">
+          <li>Pontuação Grupos: 3–1–0</li>
+          <li>Semifinais/Final com registro monitorado</li>
+          <li>Logs e posts para transparência</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ADMIN -->
+    <section id="admin" class="view">
+      <div class="grid-2">
+        <div class="card">
+          <h2>Semifinais</h2>
+          <p>Cadastre as semifinais (com código identificador) e ajuste resultados/datas na aba <b>Partidas</b>.</p>
+          <form id="semi-form" class="form">
+            <div class="row">
+              <label>Semi 1 – 1ºA × 2ºB</label>
+              <select id="semi1-a"></select>
+              <select id="semi1-b"></select>
+            </div>
+            <div class="row">
+              <label>Semi 2 – 1ºB × 2ºA</label>
+              <select id="semi2-a"></select>
+              <select id="semi2-b"></select>
+            </div>
+            <div class="row">
+              <label>Código padrão</label>
+              <input id="semi-code" placeholder="ex.: SF-IFMA" />
+            </div>
+            <div class="row end">
+              <button class="btn" id="semi-save" type="button">Criar Semifinais</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="card">
+          <h2>Ferramentas</h2>
+          <button id="seed-btn" class="btn ghost">Seed de Exemplo (grupos/jogadores/rodadas)</button>
+          <p class="muted">Apenas para ambiente de testes. Use uma vez.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- LOGIN MODAL -->
+  <div id="login-modal" class="modal hidden">
+    <div class="modal-content">
+      <button id="close-login" class="close">&times;</button>
+      <h3>Acesso</h3>
+      <form id="login-form" class="form">
+        <div class="row">
+          <label>E-mail</label>
+          <input id="login-email" type="email" required />
+        </div>
+        <div class="row">
+          <label>Senha</label>
+          <input id="login-password" type="password" required />
+        </div>
+        <div class="row end">
+          <button class="btn" type="submit">Entrar</button>
+        </div>
+      </form>
+      <p class="muted">Acesso admin é concedido por UID na coleção <code>admins</code>.</p>
+    </div>
+  </div>
+
+  <footer class="site-footer">
+    <span>© Champions Chess IFMA</span>
+  </footer>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

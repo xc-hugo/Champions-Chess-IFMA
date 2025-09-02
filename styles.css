@@ -1,0 +1,92 @@
+:root{
+  --bg:#0b0f13;
+  --elev:#12171d;
+  --card:#161d25;
+  --text:#e8edf2;
+  --muted:#8ea0b3;
+  --accent:#2bb673; /* IFMA verde */
+  --accent-2:#0b5ed7;
+  --danger:#e24a4a;
+  --shadow: 0 10px 24px rgba(0,0,0,.25);
+  --radius:16px;
+}
+
+*{ box-sizing: border-box }
+html,body{ height:100% }
+body{
+  margin:0;
+  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Liberation Sans", sans-serif;
+  background: linear-gradient(180deg,#0c1117,#0a0e13 40%, #0b0f13);
+  color:var(--text);
+}
+
+.site-header{
+  display:flex; align-items:center; justify-content:space-between;
+  padding:16px 20px; background:var(--elev); border-bottom:1px solid #1f2630;
+  position:sticky; top:0; z-index:10;
+}
+.brand{display:flex; gap:12px; align-items:center}
+.logo{width:48px; height:48px; border-radius:50%; object-fit:cover; box-shadow: var(--shadow)}
+h1{font-size:20px; margin:0}
+.subtitle{margin:2px 0 0; color:var(--muted); font-size:12px}
+.accent{color:var(--accent)}
+.auth{display:flex; align-items:center; gap:8px}
+
+.tabs{
+  display:flex; gap:8px; padding:10px 12px; background:#0e141b; overflow:auto; border-bottom:1px solid #1f2630;
+}
+.tab{
+  background:#111821; color:var(--text); border:1px solid #1f2630; padding:10px 14px; border-radius:999px; cursor:pointer;
+}
+.tab.active{ background:var(--accent); border-color:transparent; color:#07150c; font-weight:800 }
+.tab.admin-only{ color:#ffd8a8; border-color:#61481c; background: #1c160a }
+
+.container{ max-width:1100px; margin:24px auto; padding:0 16px }
+.view{ display:none }
+.view.visible{ display:block }
+
+.grid-2{ display:grid; grid-template-columns:1fr; gap:16px }
+@media(min-width:900px){ .grid-2{ grid-template-columns:1fr 1fr } }
+
+.card{
+  background:var(--card); border:1px solid #1f2630; border-radius:var(--radius); padding:18px; box-shadow: var(--shadow)
+}
+.title-row{ display:flex; justify-content:space-between; align-items:center; gap:12px }
+.filters select{ background:#0e141b; color:var(--text); border:1px solid #1f2630; padding:8px 10px; border-radius:10px }
+
+.table{ width:100%; overflow:auto }
+.table table{ width:100%; border-collapse: collapse }
+.table th, .table td{ padding:10px 12px; border-bottom:1px solid #243041; text-align:left }
+.table th{ color:#bcd0e0; font-weight:600; background:#101720 }
+.table tr:hover{ background:#10151c }
+
+.player-details .pill{
+  display:inline-block; padding:6px 10px; border-radius:999px; background:#0e141b; border:1px solid #1f2630; margin:3px 6px 0 0; color:#cde6d7;
+}
+
+.form .row{ display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px }
+.form .row.end{ justify-content:end; grid-template-columns:auto auto auto }
+.form label{ color:#b8c7d8; font-size:13px }
+.form input, .form select, .form textarea{
+  background:#0e141b; color:var(--text); border:1px solid #1f2630; border-radius:10px; padding:10px;
+}
+.form textarea{ width:100% }
+.muted{ color:var(--muted) }
+
+.btn{ background:var(--accent); color:#062010; border:none; padding:10px 14px; border-radius:10px; cursor:pointer; font-weight:700 }
+.btn.ghost{ background:#0e141b; color:#cde6d7; border:1px solid #1f2630 }
+.btn.danger{ background:var(--danger); color:#fff }
+.btn:disabled{ opacity:.6; cursor:not-allowed }
+
+.pdf-wrap{ border-radius:12px; overflow:hidden; border:1px solid #1f2630; background:#0e141b }
+
+.site-footer{ padding:20px; text-align:center; color:#8ea0b3 }
+
+.modal{ position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex; align-items:center; justify-content:center }
+.modal.hidden{ display:none }
+.modal-content{ width:min(520px,92%); background:var(--card); border:1px solid #1f2630; border-radius:16px; padding:20px; box-shadow: var(--shadow) }
+.close{ position:absolute; transform:translate(220px,-6px); background:#0e141b; border:1px solid #243041; color:#cde6d7; border-radius:999px; width:28px; height:28px; cursor:pointer }
+
+.chip{ background:#10202a; color:#cde6d7; border:1px solid #1f3631; padding:6px 10px; border-radius:999px; }
+.badge{ margin-left:8px; background:#61481c; color:#ffd8a8; padding:3px 7px; border-radius:999px; font-weight:800; font-size:11px }
+.hidden{ display:none !important }
