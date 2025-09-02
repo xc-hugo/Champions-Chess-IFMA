@@ -191,3 +191,8 @@ h1{font-size:20px;margin:0}.subtitle{margin:2px 0 0;color:var(--muted);font-size
   color: #000000;
   background: #ffffff;
 }
+
+:root { --topbar-h: 64px; }           /* ajuste se sua navbar for mais alta */
+html { scroll-behavior: smooth; scroll-padding-top: var(--topbar-h); }
+/* se seu conteúdo começa logo após a topbar fixa, vale ter um padding-top global também: */
+body { padding-top: var(--topbar-h); }
