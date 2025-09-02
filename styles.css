@@ -135,3 +135,27 @@ h1{font-size:20px;margin:0}.subtitle{margin:2px 0 0;color:var(--muted);font-size
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(43,182,115,.25);
 }
+
+/* Distância entre a lista de jogadores e a caixa de detalhes */
+#players .grid-2 { margin-bottom: 28px; }
+
+/* Select “Selecionar Jogador” com texto preto e fundo claro */
+#player-select{
+  appearance: none;
+  border-radius: 12px;
+  padding: 12px 14px;
+  border: 1px solid #cbd5e1;       /* borda clara */
+  background: #ffffff;              /* fundo claro */
+  color: #000000;                   /* TEXTO PRETO */
+  font-weight: 700;
+  transition: box-shadow .15s, border-color .15s;
+}
+#player-select:focus{
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(43,182,115,.25);
+}
+
+/* Mais respiro entre caixas nas abas pedidas */
+#partidas > .card, #posts > .card, #players > .card, #chat > .card { margin-bottom: 22px; }
+#partidas > .card:last-child, #posts > .card:last-child, #players > .card:last-child, #chat > .card:last-child { margin-bottom: 0; }
