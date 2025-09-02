@@ -1,6 +1,6 @@
-// app.js — Champions Chess IFMA
-// Depende de firebase.js (exports compatíveis com os usados abaixo)
+// app.js — Champions Chess IFMA (versão ajustada)
 
+/* ========= IMPORTS ========= */
 import {
   app,
   auth, db,
@@ -9,13 +9,10 @@ import {
   onSnapshot, query, orderBy, where, serverTimestamp, runTransaction
 } from "./firebase.js";
 
-/* ================================================================
-   Utils DOM / Data / UI
-=================================================================*/
+/* ========= HELPERS ========= */
 const $  = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
 const sleep = ms => new Promise(r=>setTimeout(r, ms));
-
 async function confirmAction(msg){ return window.confirm(msg); }
 
 function slugifyName(name){
@@ -34,22 +31,20 @@ function stageLabel(s){
   }
 }
 
-// Data/time helpers
 function parseLocalDate(str){
   if(!str) return null;
   const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?([Zz]|[+\-]\d{2}:\d{2})?$/.exec(str);
   if(m){
-    if(m[7]){ const d=new Date(str); return isNaN(d)?null:d; } // tem TZ
-    return new Date(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+(m[6]||0),0); // local
+    if(m[7]){ const d=new Date(str); return isNaN(d)?null:d; }
+    return new Date(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+(m[6]||0),0);
   }
   const d = new Date(str); return isNaN(d)?null:d;
 }
 const fmtLocalDateStr = s => { const d=parseLocalDate(s); return d?d.toLocaleString("pt-BR"):"—"; };
 const fmtTS = ts => { try{ const d=ts?.toDate?ts.toDate():(ts instanceof Date?ts:(ts?new Date(ts):null)); return d?d.toLocaleString("pt-BR"):"—"; }catch{ return "—"; } };
+const clamp = (x,min,max)=> Math.max(min, Math.min(max, x));
 
-/* ================================================================
-   Navbar/top — sem offsets especiais + troca de abas
-=================================================================*/
+/* ========= NAV / TABS ========= */
 function showTab(id){
   if(!id) id = "home";
   $$(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === id));
@@ -59,12 +54,15 @@ function showTab(id){
 }
 window.addEventListener("hashchange", ()=> showTab(location.hash.replace("#","") || "home"));
 $$(".tab").forEach(b => b.addEventListener("click", (e)=>{ e.preventDefault(); showTab(b.dataset.tab); }));
+// Esconde a aba "Perfil" se ainda existir no HTML
+const perfilTabBtn = document.querySelector('.tab[data-tab="perfil"]');
+if(perfilTabBtn) perfilTabBtn.style.display = "none";
 showTab(location.hash.replace("#","") || "home");
 
-// chip do usuário na navbar abre Perfil
+// “nome do usuário na navbar” abre Perfil:
 $("#user-chip")?.addEventListener("click", () => showTab("perfil"));
 
-// delegação global “Abrir perfil”
+// delegação global “Abrir perfil” em botões/links data-open-profile
 document.addEventListener("click", (ev)=>{
   const btn = ev.target.closest("[data-open-profile]");
   if(btn){
@@ -73,23 +71,7 @@ document.addEventListener("click", (ev)=>{
   }
 });
 
-// scroll helper para ir direto ao gerenciador
-function ensureAndScrollTo(sel){
-  let tries=0;
-  const t=setInterval(()=>{
-    const el = document.querySelector(sel);
-    if(el){
-      const y = el.getBoundingClientRect().top + window.scrollY - 8;
-      window.scrollTo({ top:y, behavior:"smooth" });
-      clearInterval(t);
-    }
-    if(++tries>20) clearInterval(t);
-  },50);
-}
-
-/* ================================================================
-   Estado global
-=================================================================*/
+/* ========= STATE ========= */
 let state = {
   user:null, admin:false, profile:null,
   players:[], matches:[], posts:[], chat:[],
@@ -97,9 +79,7 @@ let state = {
 };
 const prevResults = new Map();
 
-/* ================================================================
-   Admin: custom claims + fallback Firestore
-=================================================================*/
+/* ========= ADMIN ========= */
 async function refreshAdminStatus(){
   let ok = false;
   if(auth.currentUser){
@@ -129,16 +109,13 @@ async function requireAdmin(){
   return ok;
 }
 
-/* ================================================================
-   Auth & Perfil (username único via transação)
-=================================================================*/
+/* ========= AUTH / PERFIL ========= */
 async function loadProfile(uid){
   if(!uid){ state.profile=null; return renderProfile(); }
   const snap = await getDoc(doc(db,"profiles",uid));
   state.profile = snap.exists()?snap.data():null;
   renderProfile();
 }
-
 function renderProfile(){
   if(!state.user){
     $("#profile-email") && ($("#profile-email").value = "");
@@ -222,6 +199,13 @@ watchAuth(async (user)=>{
   $("#chat-form")?.classList.toggle("hidden",!user);
   $("#chat-login-hint")?.classList.toggle("hidden",!!user);
 
+  // apostas só para logados (desabilita o form visivelmente)
+  const betForm = $("#bet-form");
+  if(betForm){
+    betForm.querySelectorAll("select,button,input").forEach(el => el.disabled = !user);
+    betForm.style.opacity = user ? "1" : ".6";
+  }
+
   await loadProfile(user?.uid||null);
   await refreshAdminStatus();
 
@@ -229,17 +213,19 @@ watchAuth(async (user)=>{
 
   renderPosts(); renderChat(); renderMatches(); renderHome(); renderAdminSemisList();
   if(user) initRealtimeChat();
+
+  // preencher ainda mais o bloco “Bem-vindo...” (complemento de texto)
+  enrichHomeWelcomeBlock();
 });
 
-/* ================================================================
-   Coleções e listeners
-=================================================================*/
+/* ========= COLLECT ========== */
 const colPlayers = collection(db,"players");
 const colMatches = collection(db,"matches");
 const colPosts   = collection(db,"posts");
 const colBets    = collection(db,"bets");
 const colWallets = collection(db,"wallets");
 
+/* ========= SNAPSHOTS ========= */
 onSnapshot(query(colPlayers, orderBy("name")), snap=>{
   state.players = snap.docs.map(d=>({id:d.id,...d.data()}));
   renderPlayers(); fillPlayersSelects(); renderTables(); renderPlayerSelect(); renderHome(); renderAdminSemisList();
@@ -306,9 +292,7 @@ onSnapshot(colWallets, snap=>{
   renderWallet();
 });
 
-/* ================================================================
-   Estatísticas & Tabela
-=================================================================*/
+/* ========= STATS / TABLES ========= */
 function statsFromMatches(){
   const stats={};
   for(const p of state.players){ stats[p.id]={ id:p.id, name:p.name, group:p.group, points:0, wins:0, draws:0, losses:0, games:0, winsOver:{} }; }
@@ -322,9 +306,27 @@ function statsFromMatches(){
   return stats;
 }
 
-/* ================================================================
-   Home com próximas partidas + probabilidades
-=================================================================*/
+/* ========= HOME ========= */
+function enrichHomeWelcomeBlock(){
+  // Enche mais o texto do bloco “Bem-vindo...” sem mexer no HTML
+  const welcomeH2 = $("#home .card h2");
+  if(!welcomeH2 || !/Bem-vindo/i.test(welcomeH2.textContent)) return;
+  const card = welcomeH2.closest(".card");
+  const list = card?.querySelector(".list");
+  if(!list) return;
+  // adiciona detalhes extras (se ainda não inseridos)
+  if(!card.dataset.enriched){
+    list.insertAdjacentHTML("beforeend", `
+      <li><b>Transmissão e registros:</b> sempre que possível, publicar prints e comentários em <i>Post</i> e no <i>Chat</i>;</li>
+      <li><b>Fair play:</b> uso de motores durante a partida é proibido; dúvidas com a organização;</li>
+      <li><b>Apostas:</b> cada usuário começa com <b>6 pontos</b> na carteira e pode palpitar antes do horário da partida;</li>
+      <li><b>Probabilidades:</b> calculadas por votos + desempenho anterior, e mostradas em <i>Partidas</i> e na Home;</li>
+      <li><b>Semifinais:</b> definidas automaticamente quando a Fase de Grupos concluir; anúncios saem em <i>Post</i>.</li>
+    `);
+    card.dataset.enriched = "1";
+  }
+}
+
 function renderHome(){
   const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
   const scheduled=state.matches.filter(m=>!!m.date).slice().sort((a,b)=>parseLocalDate(a.date)-parseLocalDate(b.date));
@@ -339,8 +341,9 @@ function renderHome(){
 
   const rows=pick.map(m=>{
     const { probs } = computeProbabilitiesAndOdds(m);
+    const A = clamp(probs.A,0,100), B = clamp(probs.B,0,100), D = clamp(probs.D,0,100);
     const prob = `<span class="prob-pill" title="V(A): vitória do Jogador A · E: empate · V(B): vitória do Jogador B">
-      V(A) ${probs.A}% · E ${probs.D}% · V(B) ${probs.B}%
+      V(A) ${A}% · E ${D}% · V(B) ${B}%
     </span>`;
     return `<tr>
       <td>${stageLabel(m.stage)}</td>
@@ -351,7 +354,7 @@ function renderHome(){
     </tr>`;
   }).join("");
 
-  const table=`<table>
+  const table=`<table style="font-size:13px; line-height:1.25">
     <thead><tr><th>Etapa</th><th>Grupo</th><th>Partida</th><th>Data</th><th>Código</th></tr></thead>
     <tbody>${rows||"<tr><td colspan='5'>Sem partidas hoje/próximo dia.</td></tr>"}</tbody>
   </table>`;
@@ -368,9 +371,7 @@ function renderHome(){
   }
 }
 
-/* ================================================================
-   Players + Perfil dedicado
-=================================================================*/
+/* ========= PLAYERS / PERFIL ========= */
 function renderPlayers(){
   const stats=statsFromMatches();
   const groups={A:[],B:[]};
@@ -394,7 +395,6 @@ function renderPlayers(){
     c.onclick=()=>{ openPlayerProfile(c.dataset.id); };
   });
 }
-
 function renderPlayerSelect(){
   const sel=$("#player-select"); if(!sel) return;
   sel.innerHTML=""; const o=document.createElement("option"); o.value=""; o.textContent="— selecione —"; sel.appendChild(o);
@@ -419,6 +419,12 @@ function buildPlayerDetailsHTML(id){
       ${Object.entries(s?.winsOver||{}).map(([n,c])=>`<span class="pill">Venceu ${n} ×${c}</span>`).join("") || "<span class='muted'>Sem vitórias registradas.</span>"}
     </div>
     <div style="margin-top:8px"><button class="btn" data-open-profile="${p?.id}">Abrir perfil</button></div>
+    <div class="table" style="margin-top:10px">
+      <table>
+        <thead><tr><th>Etapa</th><th>Adversário</th><th>Data</th><th>Resultado</th><th>Código</th></tr></thead>
+        <tbody>${history || "<tr><td colspan='5'>Sem partidas.</td></tr>"}</tbody>
+      </table>
+    </div>
   `;
 }
 function renderPlayerDetails(){
@@ -430,7 +436,6 @@ function renderPlayerDetails(){
   const btn = box.querySelector("[data-open-profile]");
   if(btn) btn.addEventListener("click", ()=> openPlayerProfile(id));
 }
-
 function openPlayerProfile(id){
   const container=$("#player-profile"); if(!container){ showTab("players"); return; }
   container.innerHTML = buildPlayerProfileHTML(id);
@@ -485,10 +490,12 @@ function buildPlayerProfileHTML(id){
 
     <div class="card" style="margin-top:12px">
       <h3>Histórico de Partidas</h3>
-      <table>
-        <thead><tr><th>Etapa</th><th>Adversário</th><th>Data</th><th>Resultado</th><th>Código</th></tr></thead>
-        <tbody>${history || "<tr><td colspan='5'>Sem partidas.</td></tr>"}</tbody>
-      </table>
+      <div class="table">
+        <table>
+          <thead><tr><th>Etapa</th><th>Adversário</th><th>Data</th><th>Resultado</th><th>Código</th></tr></thead>
+          <tbody>${history || "<tr><td colspan='5'>Sem partidas.</td></tr>"}</tbody>
+        </table>
+      </div>
     </div>
 
     <div class="card" style="margin-top:12px">
@@ -497,29 +504,24 @@ function buildPlayerProfileHTML(id){
     </div>
   `;
 }
-// deep-link do perfil: #player/<id>
 window.addEventListener("load",()=>{
   const h=location.hash.replace("#","");
   if(h.startsWith("player/")){ openPlayerProfile(h.split("/")[1]); }
 });
 
-/* ================================================================
-   Tabelas
-=================================================================*/
+/* ========= TABLES ========= */
 function renderTables(){
   const stats=statsFromMatches(); const groups={A:[],B:[]};
   for(const id in stats){ const s=stats[id]; (groups[s.group]||(groups.A=[])).push(s); }
   ["A","B"].forEach(g=>{
     const arr=(groups[g]||[]).sort((x,y)=> y.points-x.points || y.wins-x.wins || x.name.localeCompare(y.name));
     const rows=arr.map((s,i)=>`<tr class="pos-${i+1}"><td>${i+1}</td><td>${s.name}</td><td>${s.points}</td><td>${s.games}</td><td>${s.wins}</td><td>${s.draws}</td><td>${s.losses}</td></tr>`).join("");
-    const html=`<table><thead><tr><th>#</th><th>Jogador</th><th>Pts</th><th>J</th><th>V</th><th>E</th><th>D</th></tr></thead><tbody>${rows}</tbody></table>`;
+    const html=`<div class="table"><table><thead><tr><th>#</th><th>Jogador</th><th>Pts</th><th>J</th><th>V</th><th>E</th><th>D</th></tr></thead><tbody>${rows}</tbody></table></div>`;
     const box=$(`#table-${g}`); if(box) box.innerHTML=html;
   });
 }
 
-/* ================================================================
-   Probabilidades/ODDS
-=================================================================*/
+/* ========= PROBABILIDADES ========= */
 function getMatchBetCounts(matchId){
   const bets = state.bets.filter(b => b.matchId === matchId);
   let cA=0, cB=0, cD=0;
@@ -552,84 +554,114 @@ function computeProbabilitiesAndOdds(m){
   let pB = 0.6*pbB + 0.4*pfB;
   let pD = 0.6*pbD + 0.4*0.10;
 
-  const T = pA + pB + pD;
-  pA/=T; pB/=T; pD/=T;
+  // normaliza & limita para evitar valores fora do [0,1]
+  const T = pA + pB + pD || 1;
+  pA = clamp(pA/T, 0.001, 0.999);
+  pB = clamp(pB/T, 0.001, 0.999);
+  pD = clamp(pD/T, 0.001, 0.999);
 
-  const clamp=(x,min,max)=> Math.max(min, Math.min(max,x));
+  // odds limitadas
   const oddA = clamp(1/pA, 1.2, 5);
   const oddB = clamp(1/pB, 1.2, 5);
   const oddD = clamp(1/pD, 1.2, 5);
 
+  // em %
+  const PctA = clamp(Math.round(pA*100), 0, 100);
+  const PctB = clamp(Math.round(pB*100), 0, 100);
+  const PctD = clamp(Math.round(pD*100), 0, 100);
+
   return {
-    probs: {
-      A: Math.round(pA*100),
-      B: Math.round(pB*100),
-      D: Math.round(pD*100),
-    },
-    odds: {
-      A: Number(oddA.toFixed(2)),
-      B: Number(oddB.toFixed(2)),
-      D: Number(oddD.toFixed(2)),
-    }
+    probs: { A: PctA, B: PctB, D: PctD },
+    odds:  { A: Number(oddA.toFixed(2)), B: Number(oddB.toFixed(2)), D: Number(oddD.toFixed(2)) }
   };
 }
 
-/* ================================================================
-   Partidas (lista, edição, adiamento, semis)
-=================================================================*/
+/* ========= PARTIDAS ========= */
 function renderMatches(){
-  const stageF=$("#filter-stage")?.value||"all";
+  // garante opções do filtro (caso HTML antigo)
+  const filter = $("#filter-stage");
+  if(filter && !filter.dataset.patched){
+    filter.innerHTML = `
+      <option value="groups">Fase de grupos</option>
+      <option value="groupA">Grupo A</option>
+      <option value="groupB">Grupo B</option>
+      <option value="semifinal">Semifinal</option>
+      <option value="all">Todas</option>`;
+    filter.dataset.patched = "1";
+  }
+
+  const stageF=$("#filter-stage")?.value||"groups";
   const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
   let arr=state.matches.slice();
-  if(stageF!=="all") arr=arr.filter(m=>m.stage===stageF);
 
-  const gA=arr.filter(m=>m.stage==="groups"&&m.group==="A");
-  const gB=arr.filter(m=>m.stage==="groups"&&m.group==="B");
-  const ko=arr.filter(m=>m.stage!=="groups");
+  const listGA=arr.filter(m=>m.stage==="groups"&&m.group==="A");
+  const listGB=arr.filter(m=>m.stage==="groups"&&m.group==="B");
+  const listSemi=arr.filter(m=>m.stage==="semifinal");
+  const listKO=arr.filter(m=>m.stage!=="groups"); // semis/final/3º
+
+  // célula probabilidade — V/E/D por jogador
+  const probCell = (m)=>{
+    const { probs } = computeProbabilitiesAndOdds(m);
+    const vA = clamp(probs.A,0,100), vB = clamp(probs.B,0,100), d = clamp(probs.D,0,100);
+    // Para cada jogador: Vitória / Empate / Derrota
+    const A = `A: V ${vA}% · E ${d}% · D ${vB}%`;
+    const B = `B: V ${vB}% · E ${d}% · D ${vA}%`;
+    return `${A}<br>${B}`;
+  };
 
   const makeTable=items=>`
-    <table>
-      <thead><tr>
-        <th>Etapa</th><th>Grupo</th><th>Partida</th><th>Data/Hora</th><th>Código</th>
-        <th>Prob.</th><th>Resultado</th>${state.admin?`<th>Ações</th>`:""}
-      </tr></thead>
-      <tbody>
-        ${items.map(m=>{
-          const res = m.result==="A"?mapP[m.aId]
-                    : m.result==="B"?mapP[m.bId]
-                    : m.result==="draw"?"Empate"
-                    : m.result==="postponed"?"Adiado":"Pendente";
-          const probTxt = (() => {
-            const { probs } = computeProbabilitiesAndOdds(m);
-            return `V(A) ${probs.A}% · E ${probs.D}% · V(B) ${probs.B}%`;
-          })();
-          return `<tr data-id="${m.id}">
-            <td>${stageLabel(m.stage)}</td>
-            <td>${m.group||"-"}</td>
-            <td>${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}</td>
-            <td>${fmtLocalDateStr(m.date)}</td>
-            <td>${m.code||"-"}</td>
-            <td>${probTxt}</td>
-            <td>${res}</td>
-            ${state.admin?`<td><button class="btn ghost btn-edit" data-id="${m.id}">Editar</button></td>`:""}
-          </tr>`;
-        }).join("")}
-      </tbody>
-    </table>`;
+    <div class="table">
+      <table>
+        <thead><tr>
+          <th>Etapa</th><th>Grupo</th><th>Partida</th><th>Data/Hora</th><th>Código</th>
+          <th>Probabilidade</th><th>Resultado</th>${state.admin?`<th>Ações</th>`:""}
+        </tr></thead>
+        <tbody>
+          ${items.map(m=>{
+            const res = m.result==="A"?mapP[m.aId]
+                      : m.result==="B"?mapP[m.bId]
+                      : m.result==="draw"?"Empate"
+                      : m.result==="postponed"?"Adiado":"Pendente";
+            return `<tr data-id="${m.id}">
+              <td>${stageLabel(m.stage)}</td>
+              <td>${m.group||"-"}</td>
+              <td>${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}</td>
+              <td>${fmtLocalDateStr(m.date)}</td>
+              <td>${m.code||"-"}</td>
+              <td>${probCell(m)}</td>
+              <td>${res}</td>
+              ${state.admin?`<td><button class="btn ghost btn-edit" data-id="${m.id}">Editar</button></td>`:""}
+            </tr>`;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>`;
 
-  const html=`
-    <div class="card" style="margin-bottom:12px"><h3>F. Grupos – Grupo A</h3><div class="table">${makeTable(gA)}</div></div>
-    <div class="card" style="margin-bottom:12px"><h3>F. Grupos – Grupo B</h3><div class="table">${makeTable(gB)}</div></div>
-    <div class="card"><h3>Mata-mata (Semis/Final/3º)</h3><div class="table">${makeTable(ko)}</div></div>`;
+  let html="";
+  if(stageF==="groups" || stageF==="groupA" || stageF==="all"){
+    if(stageF!=="groupB"){
+      html += `<div class="card" style="margin-bottom:12px"><h3>F. Grupos – Grupo A</h3>${makeTable(listGA)}</div>`;
+    }
+  }
+  if(stageF==="groups" || stageF==="groupB" || stageF==="all"){
+    if(stageF!=="groupA"){
+      html += `<div class="card" style="margin-bottom:12px"><h3>F. Grupos – Grupo B</h3>${makeTable(listGB)}</div>`;
+    }
+  }
+  if(stageF==="semifinal" || stageF==="all"){
+    const onlySemi = stageF==="semifinal" ? listSemi : listKO;
+    html += `<div class="card"><h3>${stageF==="semifinal"?"Semifinais":"Mata-mata (Semis/Final/3º)"}</h3>${makeTable(onlySemi)}</div>`;
+  }
+
   const box=$("#matches-list");
   if(box){
-    box.innerHTML=html;
+    box.innerHTML=html || `<div class="card"><p class="muted">Nenhuma partida para o filtro atual.</p></div>`;
     if(state.admin){ $$(".btn-edit").forEach(b=> b.onclick=()=>loadMatchToForm(b.dataset.id)); }
   }
 }
 $("#filter-stage")?.addEventListener("change", renderMatches);
 
-// Adiamento automático — 24h após a data da partida (apenas a que venceu o prazo)
+// 24h após a hora — adia somente a partida vencida
 async function autoPostponeOverdueMatches(){
   if(!state.admin) return;
   const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
@@ -659,7 +691,7 @@ async function autoPostponeOverdueMatches(){
   if(tasks.length) await Promise.allSettled(tasks);
 }
 
-// Semifinais automáticas quando F. Grupos termina
+// Semifinais automáticas quando Fase de Grupos termina
 async function checkAndAutoCreateSemis(){
   const groupMatches=state.matches.filter(m=>m.stage==="groups");
   if(groupMatches.length===0) return;
@@ -694,7 +726,6 @@ function fillPlayersSelects(){
   });
   const sel=$("#player-select"); if(sel && !sel.value) renderPlayerSelect();
 }
-
 async function loadMatchToForm(id){
   const m=state.matches.find(x=>x.id===id); if(!m) return;
   $("#match-id").value=m.id; $("#match-a").value=m.aId||""; $("#match-b").value=m.bId||"";
@@ -702,34 +733,10 @@ async function loadMatchToForm(id){
   $("#match-date").value=m.date||""; $("#match-date-orig").value=m.date||"";
   $("#match-date").dataset.dirty="false"; $("#match-date").oninput=()=> $("#match-date").dataset.dirty="true";
   $("#match-code").value=m.code||""; $("#match-result").value=m.result||"";
-  showTab("partidas"); ensureAndScrollTo("#admin-matches, #match-form");
+  showTab("partidas");
 }
-$("#match-reset")?.addEventListener("click", ()=>{ $("#match-form").reset(); $("#match-id").value=""; $("#match-date").dataset.dirty="false"; });
-$("#match-delete")?.addEventListener("click", async ()=>{
-  const id=$("#match-id").value; if(!id) return;
-  if(!(await confirmAction("Excluir partida?"))) return;
-  if(!(await requireAdmin())) return;
-  await deleteDoc(doc(db,"matches",id));
-  $("#match-form").reset(); $("#match-id").value=""; $("#match-date").dataset.dirty="false";
-});
-$("#match-form")?.addEventListener("submit", async (e)=>{
-  e.preventDefault();
-  if(!(await requireAdmin())) return;
-  const payload={
-    aId:$("#match-a").value, bId:$("#match-b").value,
-    stage:$("#match-stage").value, group:$("#match-group").value||null,
-    code:$("#match-code").value||null, result:$("#match-result").value||null
-  };
-  const isEdit=!!$("#match-id").value; const dateDirty=$("#match-date").dataset.dirty==="true"; const dateVal=$("#match-date").value||null;
-  if(!isEdit) payload.date=dateVal; else if(dateDirty) payload.date=dateVal;
-  const id=$("#match-id").value;
-  if(id) await updateDoc(doc(db,"matches",id), payload); else await addDoc(collection(db,"matches"), payload);
-  $("#match-form").reset(); $("#match-id").value=""; $("#match-date").dataset.dirty="false";
-});
 
-/* ================================================================
-   Posts
-=================================================================*/
+/* ========= POSTS ========= */
 $("#post-form")?.addEventListener("submit", async (e)=>{
   e.preventDefault();
   if(!auth.currentUser) return alert("Entre para publicar.");
@@ -764,11 +771,7 @@ function renderPosts(){
   }
 }
 
-/* ================================================================
-   Chat — Realtime Database (RTDB)
-   Para admin apagar mensagens de qualquer usuário:
-   - Ajuste RTDB Rules para permitir write se auth.token.admin === true
-=================================================================*/
+/* ========= CHAT (RTDB) ========= */
 let rtdb=null, rtdbRefChat=null, rtdbApi=null;
 async function initRealtimeChat(){
   if(rtdb) return;
@@ -836,9 +839,7 @@ function renderChat(){
   }
 }
 
-/* ================================================================
-   Apostas — carteira, select de partidas, odds
-=================================================================*/
+/* ========= APOSTAS ========= */
 function populateBetOptions(){
   const sel = $("#bet-match");
   if(!sel) return;
@@ -912,7 +913,7 @@ async function settleFinishedMatchesBets(){
       const walSnap=await tx.get(walletRef);
       const current = walSnap.exists()? (walSnap.data().points||0) : 0;
 
-      // recompensa: odd * 2 pts (arredonda) se acertar; 0 se errar
+      // recompensa: odd * 2 pts (mínimo 1) se acertar; 0 se errar
       const odd = typeof bet.odd === "number" ? bet.odd : 1.5;
       const add = won ? Math.max(1, Math.round(odd * 2)) : 0;
 
@@ -926,7 +927,6 @@ async function settleFinishedMatchesBets(){
     await Promise.allSettled(ops);
   }
 }
-
 function renderBets(){
   const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
   const mapM=Object.fromEntries(state.matches.map(m=>[m.id,m]));
@@ -947,9 +947,7 @@ function renderWallet(){
   if($("#wallet-points")) $("#wallet-points").textContent = pts;
 }
 
-/* ================================================================
-   Admin: Semis & Reset & Seed
-=================================================================*/
+/* ========= ADMIN: Semis & Seed & Reset ========= */
 $("#semi-autofill")?.addEventListener("click", ()=>{
   const stats=statsFromMatches(); const groups={A:[],B:[]};
   for(const id in stats){ const s=stats[id]; (groups[s.group]||[]).push(s); }
@@ -975,7 +973,7 @@ function renderAdminSemisList(){
   const list=state.matches.filter(m=>m.stage==="semifinal");
   const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
   const rows=list.map(m=>`<tr><td>${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}</td><td>${fmtLocalDateStr(m.date)}</td><td>${m.code||"-"}</td><td>${m.result||"Pendente"}</td></tr>`).join("");
-  const html=`<table><thead><tr><th>Semifinal</th><th>Data</th><th>Código</th><th>Resultado</th></tr></thead><tbody>${rows||"<tr><td colspan='4'>Nenhuma semifinal cadastrada.</td></tr>"}</tbody></table>`;
+  const html=`<div class="table"><table><thead><tr><th>Semifinal</th><th>Data</th><th>Código</th><th>Resultado</th></tr></thead><tbody>${rows||"<tr><td colspan='4'>Nenhuma semifinal cadastrada.</td></tr>"}</tbody></table></div>`;
   $("#semi-list") && ($("#semi-list").innerHTML=html);
 }
 
@@ -1002,77 +1000,7 @@ $("#btn-reset-tournament")?.addEventListener("click", async ()=>{
   }catch(err){ alert("Erro ao resetar: "+err.message); }
 });
 
-// Seed de Exemplo — popula jogadores e agenda da Fase de Grupos
-$("#seed-btn")?.addEventListener("click", async ()=>{
-  if(!(await requireAdmin())) return;
-  if(!(await confirmAction("Popular jogadores e partidas de exemplo?"))) return;
-
-  const groupA = ["Hugo","Eudison","Rhuan","Luís Felipe","Yuri"];
-  const groupB = ["Kelvin","Marcos","Davi","Alyson","Wemerson"];
-
-  // cria players se não existem
-  const existing = await getDocs(colPlayers);
-  const names = new Set(existing.docs.map(d=>d.data().name));
-  const addIfMissing = async (name, group)=>{
-    if(!names.has(name)){
-      await addDoc(colPlayers, { name, group });
-      names.add(name);
-    }
-  };
-  for(const n of groupA) await addIfMissing(n,"A");
-  for(const n of groupB) await addIfMissing(n,"B");
-
-  // recarrega players e cria índice por nome
-  const plSnap = await getDocs(query(colPlayers, orderBy("name")));
-  const byName = {};
-  plSnap.forEach(d=>{ byName[d.data().name]=d.id; });
-
-  // agenda conforme cronograma que você passou
-  const agendaA = [
-    // R1 (Folga Hugo)
-    ["Eudison","Yuri"],["Rhuan","Luís Felipe"],
-    // R2 (Folga Luís Felipe)
-    ["Hugo","Yuri"],["Eudison","Rhuan"],
-    // R3 (Folga Eudison)
-    ["Hugo","Luís Felipe"],["Yuri","Rhuan"],
-    // R4 (Folga Yuri)
-    ["Hugo","Rhuan"],["Luís Felipe","Eudison"],
-    // R5 (Folga Rhuan)
-    ["Hugo","Eudison"],["Luís Felipe","Yuri"]
-  ];
-  const agendaB = [
-    // R1 (Folga Kelvin)
-    ["Marcos","Wemerson"],["Davi","Alyson"],
-    // R2 (Folga Alyson)
-    ["Kelvin","Wemerson"],["Marcos","Davi"],
-    // R3 (Folga Marcos)
-    ["Kelvin","Alyson"],["Wemerson","Davi"],
-    // R4 (Folga Wemerson)
-    ["Kelvin","Davi"],["Alyson","Marcos"],
-    // R5 (Folga Davi)
-    ["Kelvin","Marcos"],["Alyson","Wemerson"]
-  ];
-
-  async function addGroupMatches(agenda, group, prefix){
-    let r=1, idx=1;
-    for(const [aName,bName] of agenda){
-      const aId=byName[aName], bId=byName[bName];
-      await addDoc(colMatches,{
-        aId, bId, stage:"groups", group, code:`${prefix}-R${Math.ceil(idx/2)}-${idx%2?1:2}`,
-        date:null, result:null
-      });
-      idx++;
-    }
-  }
-  await addGroupMatches(agendaA,"A","GA");
-  await addGroupMatches(agendaB,"B","GB");
-
-  alert("Seed concluído!");
-});
-
-/* ================================================================
-   Busca rápida por jogador
-=================================================================*/
+/* ========= BUSCA JOGADOR ========= */
 $("#player-search-btn")?.addEventListener("click", ()=>{
   const q=($("#player-search")?.value||"").toLowerCase();
   const found=state.players.find(p=>p.name.toLowerCase().includes(q));
