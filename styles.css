@@ -4,24 +4,35 @@
   --shadow:0 10px 24px rgba(0,0,0,.25); --radius:16px;
 }
 
+/* Base */
 *{box-sizing:border-box}
 html,body{height:100%}
+html { scroll-behavior: smooth; scroll-padding-top: 0; } /* não reservar espaço no topo */
 body{
-  margin:0; font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial,"Noto Sans","Liberation Sans",sans-serif;
-  background:linear-gradient(180deg,#0c1117,#0a0e13 40%, #0b0f13); color:var(--text);
+  margin:0;
+  font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial,"Noto Sans","Liberation Sans",sans-serif;
+  background:linear-gradient(180deg,#0c1117,#0a0e13 40%, #0b0f13);
+  color:var(--text);
+  padding-top:0 !important; /* garante sem espaço acima da navbar */
 }
 
-.site-header{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;background:var(--elev);border-bottom:1px solid #1f2630;position:sticky;top:0;z-index:10}
+/* (Se usar .site-header em outra página, ok; aqui a navbar é a .tabs.topbar) */
+.site-header{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;background:var(--elev);border-bottom:1px solid #1f2630}
 .brand{display:flex;gap:12px;align-items:center}
 .logo{width:48px;height:48px;border-radius:50%;object-fit:cover;box-shadow:var(--shadow)}
-h1{font-size:20px;margin:0}.subtitle{margin:2px 0 0;color:var(--muted);font-size:12px}.accent{color:var(--accent)}
+h1{font-size:20px;margin:0}
+.subtitle{margin:2px 0 0;color:var(--muted);font-size:12px}
+.accent{color:var(--accent)}
 .auth{display:flex;align-items:center;gap:8px}
 
+/* NAVBAR (topbar) — NÃO fixa */
 .tabs{display:flex;gap:8px;padding:10px 12px;background:#0e141b;overflow:auto;border-bottom:1px solid #1f2630}
-.tab{background:#111821;color:var(--text);border:1px solid #1f2630;padding:10px 14px;border-radius:999px;cursor:pointer}
+.tabs.topbar{margin:0; position:static; justify-content:space-between;}
+.tab{background:#111821;color:var(--text);border:1px solid #1f2630;padding:10px 14px;border-radius:999px;cursor:pointer;white-space:nowrap}
 .tab.active{background:var(--accent);border-color:transparent;color:#07150c;font-weight:800}
 .tab.admin-only{color:#ffd8a8;border-color:#61481c;background:#1c160a}
 
+/* Layout principal */
 .container{max-width:1100px;margin:24px auto;padding:0 16px}
 .view{display:none}.view.visible{display:block}
 
@@ -32,9 +43,10 @@ h1{font-size:20px;margin:0}.subtitle{margin:2px 0 0;color:var(--muted);font-size
 .title-row{display:flex;justify-content:space-between;align-items:center;gap:12px}
 .filters select{background:#0e141b;color:var(--text);border:1px solid #1f2630;padding:8px 10px;border-radius:10px}
 
+/* Tabelas gerais */
 .table{width:100%;overflow:auto}
 .table table{width:100%;border-collapse:collapse}
-.table th,.table td{padding:10px 12px;border-bottom:1px solid #243041;text-align:left}
+.table th,.table td{padding:10px 12px;border-bottom:1px solid #243041;text-align:left;vertical-align:top}
 .table th{color:#bcd0e0;font-weight:600;background:#101720;position:sticky;top:0}
 .table tr:hover{background:#10151c}
 
@@ -50,12 +62,20 @@ h1{font-size:20px;margin:0}.subtitle{margin:2px 0 0;color:var(--muted);font-size
 .player-card:hover{transform:translateY(-1px)}
 .player-card.selected{outline:2px solid var(--accent)}
 .avatar{width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#0e141b;border:1px solid #1f2630;font-weight:800;color:#cde6d7}
-.player-meta{line-height:1.2}.player-meta .name{font-weight:800}.player-meta .muted{font-size:12px}
+.player-meta{line-height:1.2}
+.player-meta .name{font-weight:800}
+.player-meta .muted{font-size:12px}
 .pill{display:inline-block;padding:6px 10px;border-radius:999px;background:#10202a;border:1px solid #1f3631;margin:4px 6px 0 0;font-size:12px;color:#cde6d7}
 
 /* Posts */
-.posts .post{display:flex;gap:12px;padding:22px 0;border-bottom:1px solid #202a39}
+.posts .post{display:flex;gap:12px;padding:14px 0;border-bottom:1px solid #202a39}
 .home-posts{margin-top:18px}
+/* zebra nas postagens (como no chat) */
+.posts .post:nth-child(odd){background:#101720}
+.posts .post:nth-child(even){background:#0f141d}
+/* menos espaço entre h2 "Comunicados" e a lista */
+#posts .card > h2{margin-bottom:8px}
+#home .home-posts > h2{margin-bottom:8px}
 
 /* Chat */
 .chat-list{display:flex;flex-direction:column;gap:14px;max-height:380px;overflow:auto;padding:12px;background:#0e141b;border:1px solid #1f2630;border-radius:12px}
@@ -70,17 +90,23 @@ h1{font-size:20px;margin:0}.subtitle{margin:2px 0 0;color:var(--muted);font-size
 .form textarea{width:100%}
 .muted{color:var(--muted)}
 
+/* Botões */
 .btn{background:var(--accent);color:#062010;border:none;padding:10px 14px;border-radius:10px;cursor:pointer;font-weight:700}
 .btn.ghost{background:#0e141b;color:#cde6d7;border:1px solid #1f2630}
 .btn.danger{background:var(--danger);color:#fff}
 .btn.small{ padding: 6px 10px; border-radius: 8px; font-weight: 700; }
 .btn:disabled{opacity:.6;cursor:not-allowed}
+/* botão “lixeira” mais intuitivo */
+.btn.danger.small{display:inline-flex;align-items:center;justify-content:center;gap:6px}
 
+/* PDF */
 .pdf-wrap{border-radius:12px;overflow:hidden;border:1px solid #1f2630;background:#0e141b}
 .cta-row{display:flex;gap:10px;margin-top:10px}
 
+/* Footer */
 .site-footer{padding:20px;text-align:center;color:#8ea0b3}
 
+/* Chips / Badges */
 .chip{background:#10202a;color:#cde6d7;border:1px solid #1f3631;padding:6px 10px;border-radius:999px}
 .badge{margin-left:8px;background:#61481c;color:#ffd8a8;padding:3px 7px;border-radius:999px;font-weight:800;font-size:11px}
 .hidden{display:none !important}
@@ -119,27 +145,7 @@ h1{font-size:20px;margin:0}.subtitle{margin:2px 0 0;color:var(--muted);font-size
 }
 #player-search-btn::before{ content: "🔎 "; }
 
-/* Select “Selecionar Jogador” mais bonito */
-#player-select{
-  appearance: none;
-  border-radius: 12px;
-  padding: 12px 14px;
-  border: 1px solid #274057;
-  background: linear-gradient(180deg,#0e141b,#0b121a);
-  color: var(--text);
-  font-weight: 700;
-  transition: box-shadow .15s, border-color .15s;
-}
-#player-select:focus{
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(43,182,115,.25);
-}
-
-/* Distância entre a lista de jogadores e a caixa de detalhes */
-#players .grid-2 { margin-bottom: 28px; }
-
-/* Select “Selecionar Jogador” com texto preto e fundo claro */
+/* Select “Selecionar Jogador” com texto preto e fundo claro (legível) */
 #player-select{
   appearance: none;
   border-radius: 12px;
@@ -155,87 +161,48 @@ h1{font-size:20px;margin:0}.subtitle{margin:2px 0 0;color:var(--muted);font-size
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(43,182,115,.25);
 }
+/* opções do select legíveis */
+#player-select option { color:#000000; background:#ffffff; }
 
-/* Mais respiro entre caixas nas abas pedidas */
-#partidas > .card, #posts > .card, #players > .card, #chat > .card { margin-bottom: 22px; }
-#partidas > .card:last-child, #posts > .card:last-child, #players > .card:last-child, #chat > .card:last-child { margin-bottom: 0; }
-
-/* Mais distância entre a grade e a caixa de detalhes + padding maior */
+/* Distância entre a lista de jogadores e a caixa de detalhes */
 #players .grid-2 { margin-bottom: 36px; }
+
+/* Caixa de detalhes do player com mais respiro */
 #player-details {
   margin-top: 10px;
-  padding: 18px 20px;              /* padding maior */
+  padding: 18px 20px;
   border: 1px solid #1f2630;
   border-radius: 12px;
   background: #10161e;
 }
 
-/* Select “Selecionar Jogador” com opções legíveis (texto preto) */
-#player-select {
-  appearance: none;
-  border-radius: 12px;
-  padding: 12px 14px;
-  border: 1px solid #cbd5e1;
-  background: #ffffff;             /* fundo claro */
-  color: #000000;                  /* texto preto */
-  font-weight: 700;
-  transition: box-shadow .15s, border-color .15s;
-}
-#player-select:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(43,182,115,.25);
-}
-/* Garante as opções pretas no menu do select */
-#player-select option {
-  color: #000000;
-  background: #ffffff;
-}
-
-:root { --topbar-h: 64px; }           /* ajuste se sua navbar for mais alta */
-html { scroll-behavior: smooth; scroll-padding-top: var(--topbar-h); }
-/* se seu conteúdo começa logo após a topbar fixa, vale ter um padding-top global também: */
-body { padding-top: var(--topbar-h); }
-
-/* ==== Correções de layout ==== */
-html, body { margin: 0; }
-
-/* zera qualquer margem vertical que cause “vão” antes da navbar */
-.site-header { margin: 0; }
-.tabs.topbar { margin: 0; }
-
-/* Apostas: mais espaço entre caixas */
-#apostas .grid-2 { gap: 24px; }
-#apostas .card { margin-bottom: 18px; }
-
-/* --- Remover qualquer espaço antes da navbar --- */
-:root { --topbar-h: 0px; }
-html, body { margin: 0; }
-body { padding-top: 0 !important; }
-
-/* Navbar de 3 colunas (esquerda/centro/direita) — se quiser mover pro CSS principal */
-.tabs.topbar { justify-content: space-between; }
-
-/* Home: mais respiro entre cards de “próximas partidas” e posts */
+/* Home: mais respiro entre cards e próxima partidas compacto */
 #home .grid-2 { gap: 20px; }
-/* Probabilidades aparecem com pill */
+#home-next table { font-size:12px; line-height:1.2; }
+#home-next th, #home-next td { padding:6px 8px; white-space:nowrap; }
 .prob-pill {
   display:inline-block; padding:4px 8px; border-radius:999px;
   background:#10202a; border:1px solid #1f3631; color:#cde6d7; font-size:12px; margin-left:6px;
 }
 
 /* Perfil do jogador — layout mais bonito */
-.profile-hero {
-  display:flex; gap:16px; align-items:center;
-}
+.profile-hero { display:flex; gap:16px; align-items:center; }
 .profile-avatar {
-  width:72px; height:72px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+  width:72px; height:72px; border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
   background:#0e141b; border:1px solid #1f2630; font-weight:800; font-size:24px; color:#cde6d7;
   box-shadow: var(--shadow);
 }
-.profile-stats {
-  display:flex; flex-wrap:wrap; gap:8px; margin-top:6px;
-}
-.stat {
-  background:#10161e; border:1px solid #1f2630; border-radius:10px; padding:8px 10px; font-size:13px;
-}
+.profile-stats { display:flex; flex-wrap:wrap; gap:8px; margin-top:6px; }
+.stat { background:#10161e; border:1px solid #1f2630; border-radius:10px; padding:8px 10px; font-size:13px; }
+
+/* Partidas: tabela mais organizada */
+#matches-list table th:nth-child(1){ min-width: 110px; }
+#matches-list table th:nth-child(3){ min-width: 120px; }
+#matches-list table th:nth-child(4){ min-width: 160px; }
+#matches-list table th:nth-child(5){ min-width: 80px; }
+#matches-list table th:nth-child(6){ min-width: 100px; }
+
+/* Apostas: mais espaço entre caixas */
+#apostas .grid-2 { gap: 24px; }
+#apostas .card { margin-bottom: 18px; }
