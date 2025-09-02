@@ -10,6 +10,7 @@ export const firebaseConfig = {
   measurementId: "G-CRQSG5KVHY"
 };
 
+// ---- SDK imports (CDN v12.2.1) ----
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-app.js";
 import { getAnalytics }   from "https://www.gstatic.com/firebasejs/12.2.1/firebase-analytics.js";
 import {
@@ -22,6 +23,7 @@ import {
   onSnapshot, query, orderBy, where, serverTimestamp, runTransaction
 } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-firestore.js";
 
+// ---- Init ----
 export const app = initializeApp(firebaseConfig);
 export const analytics = getAnalytics(app);
 
@@ -30,7 +32,7 @@ setPersistence(auth, browserLocalPersistence);
 
 export const db = getFirestore(app);
 
-// Google only
+// ---- Auth helpers (Google only) ----
 export async function loginWithGoogle(){
   const provider = new GoogleAuthProvider();
   return signInWithPopup(auth, provider);
@@ -41,7 +43,8 @@ export async function setDisplayName(user, name){
 export async function logout(){ return signOut(auth); }
 export function watchAuth(cb){ return onAuthStateChanged(auth, cb); }
 
-// Admin check: /admins/{uid} {active:true}
+// ---- Admin check ----
+// Admin = documento em /admins/{uid} com { active: true }
 export async function isAdmin(uid){
   if(!uid) return false;
   const refDoc = doc(db, "admins", uid);
@@ -49,7 +52,7 @@ export async function isAdmin(uid){
   return snap.exists() && !!snap.data().active;
 }
 
-// Reexport Firestore
+// ---- Reexport Firestore utils ----
 export {
   collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
   onSnapshot, query, orderBy, where, serverTimestamp, runTransaction
