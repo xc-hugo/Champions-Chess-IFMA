@@ -95,7 +95,7 @@
       </div>
     </section>
 
-    <!-- PARTIDAS (organizado) -->
+    <!-- PARTIDAS -->
     <section id="partidas" class="view">
       <div class="card">
         <div class="title-row">
@@ -152,6 +152,7 @@
               <option value="A">Vitória Jogador A</option>
               <option value="B">Vitória Jogador B</option>
               <option value="draw">Empate</option>
+              <option value="postponed">Jogo adiado</option>
             </select>
           </div>
           <div class="row end">
@@ -177,7 +178,7 @@
       </div>
     </section>
 
-    <!-- PLAYERS (separado por grupo) -->
+    <!-- PLAYERS -->
     <section id="players" class="view">
       <div class="card">
         <h2>Buscar jogador</h2>
@@ -283,6 +284,7 @@
             <label>E-mail</label>
             <input id="profile-email" disabled/>
           </div>
+          <p><b>Username:</b> <span id="profile-username">—</span></p>
           <div class="row end">
             <button class="btn" type="submit">Salvar</button>
           </div>
@@ -331,52 +333,6 @@
       </div>
     </section>
   </main>
-
-  <!-- LOGIN / SIGNUP MODAL -->
-  <div id="login-modal" class="modal hidden">
-    <div class="modal-content">
-      <button id="close-login" class="close">&times;</button>
-      <h3 id="auth-title">Acesso</h3>
-      <div class="auth-toggle">
-        <button id="btn-login-tab" class="btn small active" type="button">Entrar</button>
-        <button id="btn-signup-tab" class="btn small ghost" type="button">Criar conta</button>
-      </div>
-
-      <form id="login-form" class="form">
-        <div class="row">
-          <label>E-mail</label>
-          <input id="login-email" type="email" required/>
-        </div>
-        <div class="row">
-          <label>Senha</label>
-          <input id="login-password" type="password" required/>
-        </div>
-        <div class="row end">
-          <button class="btn" type="submit">Entrar</button>
-        </div>
-      </form>
-
-      <form id="signup-form" class="form hidden">
-        <div class="row">
-          <label>E-mail</label>
-          <input id="signup-email" type="email" required/>
-        </div>
-        <div class="row">
-          <label>Senha</label>
-          <input id="signup-password" type="password" minlength="6" required/>
-        </div>
-        <div class="row end">
-          <button class="btn" type="submit">Criar conta</button>
-        </div>
-      </form>
-
-      <div style="display:flex; gap:8px; margin-top:8px">
-        <button id="btn-google" class="btn" type="button">Entrar com Google</button>
-      </div>
-
-      <p class="muted">Acesso admin é concedido por UID na coleção <code>admins</code>.</p>
-    </div>
-  </div>
 
   <footer class="site-footer">
     <span>© Champions Chess IFMA</span>
