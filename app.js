@@ -25,7 +25,7 @@ showTab(location.hash.replace("#","") || "home");
 function fmtDateStr(s){ return s ? new Date(s).toLocaleString("pt-BR") : "—"; }
 function option(el, value, label){ const o=document.createElement("option"); o.value=value; o.textContent=label; el.appendChild(o); }
 
-// Rotulo amigável para etapa
+// Rótulo amigável para etapa
 function stageLabel(s){
   switch((s||"").toLowerCase()){
     case "groups":    return "F. Grupos";
@@ -153,6 +153,12 @@ watchAuth(async (user)=>{
   $("#chat-login-hint")?.classList.toggle("hidden", !!user);
 
   await loadProfile(user?.uid || null);
+
+  // 🔄 Re-render imediato para mostrar botões de admin sem precisar atualizar/postar nada
+  renderPosts();
+  renderChat();
+  renderMatches();
+  renderAdminSemisList();
 });
 
 // ========== Firestore listeners ==========
