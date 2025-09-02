@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="styles.css"/>
 </head>
 <body>
+  <!-- HEADER -->
   <header class="site-header">
     <div class="brand">
       <img src="logo.png" alt="Champions Chess IFMA" class="logo">
@@ -28,13 +29,15 @@
     </div>
   </header>
 
-  <nav class="tabs">
+  <!-- NAVBAR (TOPBAR) -->
+  <nav class="tabs topbar">
     <button class="tab active" data-tab="home">Home</button>
     <button class="tab" data-tab="regulamento">Regulamento</button>
     <button class="tab" data-tab="partidas">Partidas</button>
     <button class="tab" data-tab="tabela">Tabela</button>
     <button class="tab" data-tab="players">Players</button>
     <button class="tab" data-tab="posts">Post</button>
+    <button class="tab" data-tab="apostas">Apostas</button>
     <button class="tab" data-tab="chat">Chat</button>
     <button class="tab" data-tab="perfil">Perfil</button>
     <button id="tab-admin" class="tab admin-only hidden" data-tab="admin">Admin</button>
@@ -248,6 +251,11 @@
       </div>
     </section>
 
+    <!-- PERFIL DE JOGADOR (VIEW SEPARADA) -->
+    <section id="player-profile" class="view">
+      <!-- Conteúdo é injetado pelo app.js (buildPlayerProfileHTML) -->
+    </section>
+
     <!-- POSTS -->
     <section id="posts" class="view">
       <div class="card">
@@ -270,6 +278,64 @@
             <button class="btn" type="submit">Publicar</button>
           </div>
         </form>
+      </div>
+    </section>
+
+    <!-- APOSTAS -->
+    <section id="apostas" class="view">
+      <div class="grid-2">
+        <div class="card">
+          <h2>Sua Carteira</h2>
+          <p>Pontos por acerto: <b>+2</b></p>
+          <p>Seus pontos: <b id="wallet-points">0</b></p>
+        </div>
+
+        <div class="card">
+          <h2>Nova Aposta</h2>
+          <form id="bet-form" class="form">
+            <div class="row">
+              <label>Partida</label>
+              <select id="bet-match" required>
+                <option value="">— selecione —</option>
+                <!-- (opções de partidas ainda não são preenchidas via JS;
+                     se quiser, posso te mandar um pequeno trecho para popular
+                     esse select com as próximas partidas) -->
+              </select>
+            </div>
+            <div class="row">
+              <label>Palpite</label>
+              <select id="bet-pick" required>
+                <option value="">— selecione —</option>
+                <option value="A">Vitória do Jogador A</option>
+                <option value="B">Vitória do Jogador B</option>
+                <option value="draw">Empate</option>
+              </select>
+            </div>
+            <div class="row end">
+              <button class="btn" type="submit">Apostar</button>
+            </div>
+            <p class="muted">Apostas só são permitidas antes do horário da partida.</p>
+          </form>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Suas Apostas</h2>
+        <div class="table">
+          <table>
+            <thead>
+              <tr>
+                <th>Partida</th>
+                <th>Etapa/Grupo</th>
+                <th>Palpite</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="bets-list">
+              <tr><td colspan="4" class="muted">Sem apostas.</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </section>
 
@@ -349,6 +415,12 @@
           <p class="muted">Preenche jogadores/rodadas de teste.</p>
         </div>
       </div>
+
+      <div id="admin-matches" class="card admin-only hidden" style="margin-top:16px;">
+        <h3>Gerenciar Partidas</h3>
+        <!-- O mesmo formulário de "Partidas" pode ser usado aqui, se desejar duplicar -->
+        <!-- Mantive apenas na aba Partidas para evitar confusão -->
+      </div>
     </section>
   </main>
 
@@ -359,5 +431,3 @@
   <script type="module" src="app.js"></script>
 </body>
 </html>
-
-
