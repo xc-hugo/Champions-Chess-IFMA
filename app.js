@@ -1,7 +1,9 @@
 import {
-  auth, db, loginEmailPassword, logout, watchAuth, isAdmin,
+  auth, db, storage,
+  loginEmailPassword, signupEmailPassword, logout, watchAuth, isAdmin,
   collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
-  onSnapshot, query, orderBy, where, serverTimestamp
+  onSnapshot, query, orderBy, where, serverTimestamp,
+  ref, uploadBytes, getDownloadURL
 } from "./firebase.js";
 
 // ======= UI Helpers =======
@@ -10,33 +12,41 @@ const $$ = s => Array.from(document.querySelectorAll(s));
 function showTab(id){
   $$(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === id));
   $$(".view").forEach(v => v.classList.toggle("visible", v.id === id));
-  location.hash = id;
+  if(id) location.hash = id;
 }
-function fmtDate(ts){
-  try{
-    const d = ts instanceof Date ? ts : new Date(ts);
-    return d.toLocaleString("pt-BR");
-  }catch(e){ return "—"; }
-}
-function option(el, value, label){
-  const o = document.createElement("option");
-  o.value = value; o.textContent = label;
-  el.appendChild(o);
-}
+function fmtDateStr(s){ return s ? new Date(s).toLocaleString("pt-BR") : "—"; }
+function option(el, value, label){ const o=document.createElement("option"); o.value=value; o.textContent=label; el.appendChild(o); }
 
 // ======= State =======
 let state = {
   user: null,
   admin: false,
   players: [],   // {id, name, group}
-  matches: [],   // {id, aId, bId, date, group, stage, result, code}
-  posts: []      // {id, title, body, createdAt}
+  matches: [],   // {id, aId, bId, date: 'YYYY-MM-DDTHH:mm'|null, group, stage, result, code}
+  posts: [],     // {id, title, body, imageUrl?, createdAt}
+  chat: []       // {id, text, author, createdAt, expireAt}
 };
+
+// ======= Tabs routing =======
+$$(".tab").forEach(b => b.onclick = () => showTab(b.dataset.tab));
+if(location.hash){ showTab(location.hash.replace("#","")); }
 
 // ======= Auth UI =======
 const loginModal = $("#login-modal");
 $("#btn-open-login").onclick = () => loginModal.classList.remove("hidden");
 $("#close-login").onclick = () => loginModal.classList.add("hidden");
+
+// Toggle login/signup
+$("#btn-login-tab").onclick = ()=>{
+  $("#btn-login-tab").classList.add("active"); $("#btn-signup-tab").classList.remove("active");
+  $("#login-form").classList.remove("hidden"); $("#signup-form").classList.add("hidden");
+  $("#auth-title").textContent = "Acesso";
+};
+$("#btn-signup-tab").onclick = ()=>{
+  $("#btn-signup-tab").classList.add("active"); $("#btn-login-tab").classList.remove("active");
+  $("#signup-form").classList.remove("hidden"); $("#login-form").classList.add("hidden");
+  $("#auth-title").textContent = "Criar conta";
+};
 
 $("#login-form").addEventListener("submit", async (e)=>{
   e.preventDefault();
@@ -45,16 +55,19 @@ $("#login-form").addEventListener("submit", async (e)=>{
   try{
     await loginEmailPassword(email, pass);
     loginModal.classList.add("hidden");
-  }catch(err){
-    alert("Erro ao entrar: " + err.message);
-  }
+  }catch(err){ alert("Erro ao entrar: " + err.message); }
 });
-
+$("#signup-form").addEventListener("submit", async (e)=>{
+  e.preventDefault();
+  const email = $("#signup-email").value.trim();
+  const pass = $("#signup-password").value.trim();
+  try{
+    await signupEmailPassword(email, pass);
+    alert("Conta criada! Você já está logado.");
+    loginModal.classList.add("hidden");
+  }catch(err){ alert("Erro ao cadastrar: " + err.message); }
+});
 $("#btn-logout").onclick = async () => { await logout(); };
-
-// ======= Tabs routing =======
-$$(".tab").forEach(b => b.onclick = () => showTab(b.dataset.tab));
-if(location.hash){ showTab(location.hash.replace("#","")); }
 
 // ======= Watch Auth =======
 watchAuth(async (user)=>{
@@ -68,12 +81,17 @@ watchAuth(async (user)=>{
   $("#admin-badge").classList.toggle("hidden", !state.admin);
   $("#tab-admin").classList.toggle("hidden", !state.admin);
   $$(".admin-only").forEach(el => el.classList.toggle("hidden", !state.admin));
+
+  // Chat: input só se logado
+  $("#chat-form").classList.toggle("hidden", !user);
+  $("#chat-login-hint").classList.toggle("hidden", !!user);
 });
 
 // ======= Firestore listeners =======
 const colPlayers = collection(db, "players");
 const colMatches = collection(db, "matches");
 const colPosts   = collection(db, "posts");
+const colChat    = collection(db, "chat");
 
 onSnapshot(query(colPlayers, orderBy("name")), snap=>{
   state.players = snap.docs.map(d => ({ id:d.id, ...d.data() }));
@@ -81,28 +99,101 @@ onSnapshot(query(colPlayers, orderBy("name")), snap=>{
   fillPlayersSelects();
   renderTables();
   renderPlayerSelect();
+  renderHome();
 });
 onSnapshot(query(colMatches, orderBy("date")), snap=>{
   state.matches = snap.docs.map(d => ({ id:d.id, ...d.data() }));
   renderMatches();
   renderTables();
   renderPlayerDetails();
+  renderHome();
 });
 onSnapshot(query(colPosts, orderBy("createdAt","desc")), snap=>{
   state.posts = snap.docs.map(d => ({ id:d.id, ...d.data() }));
   renderPosts();
+  renderHome();
+});
+onSnapshot(query(colChat, orderBy("createdAt","desc")), snap=>{
+  // filtra expirados localmente (24h) – TTL no Firestore pode ser ativado para remoção automática
+  const now = Date.now();
+  state.chat = snap.docs
+    .map(d => ({ id:d.id, ...d.data() }))
+    .filter(m => !m.expireAt || (m.expireAt.toDate ? m.expireAt.toDate().getTime() : new Date(m.expireAt).getTime()) > now);
+  renderChat();
 });
 
-// ======= Renderers =======
+// ======= Helpers de estatísticas =======
+function statsFromMatches(){
+  // Só fase de grupos conta pontos (3/1/0)
+  const stats = {};
+  for(const p of state.players){
+    stats[p.id] = { id:p.id, name:p.name, group:p.group, points:0, wins:0, draws:0, losses:0, games:0, winsOver:{} };
+  }
+  for(const m of state.matches){
+    if(m.stage !== "groups") continue;
+    const a = stats[m.aId], b = stats[m.bId];
+    if(!a || !b) continue;
+    if(m.result === "A"){
+      a.points+=3; a.wins++; a.games++; b.losses++; b.games++;
+      a.winsOver[b.name] = (a.winsOver[b.name]||0)+1;
+    }else if(m.result === "B"){
+      b.points+=3; b.wins++; b.games++; a.losses++; a.games++;
+      b.winsOver[a.name] = (b.winsOver[a.name]||0)+1;
+    }else if(m.result === "draw"){
+      a.points+=1; b.points+=1; a.draws++; b.draws++; a.games++; b.games++;
+    }
+  }
+  return stats;
+}
+
+// ======= Home =======
+function renderHome(){
+  // Próximas partidas (5 mais próximas com data definida)
+  const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
+  const upcoming = state.matches
+    .filter(m => !!m.date)
+    .slice() // já ordenado por 'date'
+    .slice(0,5)
+    .map(m => `
+      <tr>
+        <td>${m.stage || "-"}</td>
+        <td>${m.group || "-"}</td>
+        <td>${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}</td>
+        <td>${fmtDateStr(m.date)}</td>
+        <td>${m.code || "-"}</td>
+      </tr>
+    `).join("");
+  $("#home-next").innerHTML = `
+    <table>
+      <thead><tr><th>Etapa</th><th>Grupo</th><th>Partida</th><th>Data</th><th>Código</th></tr></thead>
+      <tbody>${upcoming || "<tr><td colspan='5'>Sem partidas agendadas.</td></tr>"}</tbody>
+    </table>`;
+
+  // Últimos 3 posts
+  const posts = state.posts.slice(0,3).map(p=> renderPostItem(p)).join("");
+  $("#home-posts").innerHTML = posts || `<p class="muted">Sem comunicados.</p>`;
+}
+
+// ======= Players =======
 function renderPlayers(){
-  const el = $("#players-list");
-  const rows = state.players.map(p => `
-    <tr>
-      <td>${p.name}</td>
-      <td>${p.group || "-"}</td>
-    </tr>
-  `).join("");
-  el.innerHTML = `<table><thead><tr><th>Nome</th><th>Grupo</th></tr></thead><tbody>${rows}</tbody></table>`;
+  // Cards
+  const stats = statsFromMatches();
+  const cards = state.players.map(p=>{
+    const s = stats[p.id];
+    const initials = (p.name||"?").split(" ").map(x=>x[0]).slice(0,2).join("").toUpperCase();
+    return `
+      <div class="player-card">
+        <div class="avatar">${initials}</div>
+        <div class="player-meta">
+          <div class="name">${p.name} <span class="badge-small">Grupo ${p.group}</span></div>
+          <div class="muted">Pts: <b>${s.points}</b> · J:${s.games} · V:${s.wins} · E:${s.draws} · D:${s.losses}</div>
+        </div>
+      </div>
+    `;
+  }).join("");
+  $("#players-cards").innerHTML = cards || `<p class="muted">Nenhum jogador cadastrado.</p>`;
+
+  // Tabela simples (opcional) — removida para priorizar cards
 }
 
 function renderPlayerSelect(){
@@ -112,64 +203,6 @@ function renderPlayerSelect(){
   state.players.forEach(p => option(sel, p.id, p.name));
   sel.onchange = renderPlayerDetails;
 }
-
-function statsFromMatches(){
-  // Build stats by player id
-  const stats = {};
-  for(const p of state.players){
-    stats[p.id] = {
-      id: p.id, name: p.name, group: p.group,
-      points:0, wins:0, draws:0, losses:0,
-      winsOver: {} // name -> count
-    };
-  }
-  for(const m of state.matches){
-    if(m.stage !== "groups") continue; // somente fase de grupos na tabela
-    const a = stats[m.aId], b = stats[m.bId];
-    if(!a || !b) continue;
-    if(m.result === "A"){
-      a.points+=3; a.wins++; b.losses++;
-      a.winsOver[b.name] = (a.winsOver[b.name]||0)+1;
-    }else if(m.result === "B"){
-      b.points+=3; b.wins++; a.losses++;
-      b.winsOver[a.name] = (b.winsOver[a.name]||0)+1;
-    }else if(m.result === "draw"){
-      a.points+=1; b.points+=1; a.draws++; b.draws++;
-    }
-  }
-  return stats;
-}
-
-function renderTables(){
-  const stats = statsFromMatches();
-  const groups = {A:[], B:[]};
-  for(const id in stats){
-    const s = stats[id];
-    (groups[s.group]||[]).push(s);
-  }
-  ["A","B"].forEach(g=>{
-    const arr = (groups[g]||[]).sort((x,y)=>{
-      if(y.points!==x.points) return y.points - x.points;
-      if(y.wins!==x.wins) return y.wins - x.wins;
-      return x.name.localeCompare(y.name);
-    });
-    const rows = arr.map((s,i)=>`
-      <tr>
-        <td>${i+1}</td>
-        <td>${s.name}</td>
-        <td>${s.points}</td>
-        <td>${s.wins}</td>
-        <td>${s.draws}</td>
-        <td>${s.losses}</td>
-      </tr>`).join("");
-    $(`#table-${g}`).innerHTML = `
-      <table>
-        <thead><tr><th>#</th><th>Jogador</th><th>Pts</th><th>V</th><th>E</th><th>D</th></tr></thead>
-        <tbody>${rows || ""}</tbody>
-      </table>`;
-  });
-}
-
 function renderPlayerDetails(){
   const id = $("#player-select").value;
   const box = $("#player-details");
@@ -179,11 +212,43 @@ function renderPlayerDetails(){
   const wins = Object.entries(s.winsOver).map(([name,c])=>`<span class="pill">Venceu ${name} ×${c}</span>`).join("") || "<span class='muted'>Sem vitórias registradas.</span>";
   box.innerHTML = `
     <p><b>${s.name}</b> — Grupo ${s.group}</p>
-    <p>Pontos: <b>${s.points}</b> · V: <b>${s.wins}</b> · E: <b>${s.draws}</b> · D: <b>${s.losses}</b></p>
+    <p>Pontos: <b>${s.points}</b> · Jogos: <b>${s.games}</b> · V: <b>${s.wins}</b> · E: <b>${s.draws}</b> · D: <b>${s.losses}</b></p>
     <div>${wins}</div>
   `;
 }
 
+// ======= Tabela de Pontos =======
+function renderTables(){
+  const stats = statsFromMatches();
+  const groups = {A:[], B:[]};
+  for(const id in stats){ const s = stats[id]; (groups[s.group]||[]).push(s); }
+  ["A","B"].forEach(g=>{
+    const arr = (groups[g]||[]).sort((x,y)=>{
+      if(y.points!==x.points) return y.points - x.points;
+      if(y.wins!==x.wins) return y.wins - x.wins;
+      return x.name.localeCompare(y.name);
+    });
+    const rows = arr.map((s,i)=>`
+      <tr class="pos-${i+1}">
+        <td>${i+1}</td>
+        <td>${s.name}</td>
+        <td>${s.points}</td>
+        <td>${s.games}</td>
+        <td>${s.wins}</td>
+        <td>${s.draws}</td>
+        <td>${s.losses}</td>
+      </tr>`).join("");
+    $(`#table-${g}`).innerHTML = `
+      <table>
+        <thead><tr>
+          <th>#</th><th>Jogador</th><th>Pts</th><th>J</th><th>V</th><th>E</th><th>D</th>
+        </tr></thead>
+        <tbody>${rows || ""}</tbody>
+      </table>`;
+  });
+}
+
+// ======= Partidas =======
 function renderMatches(){
   const stageF = $("#filter-stage").value;
   const groupF = $("#filter-group").value;
@@ -201,7 +266,7 @@ function renderMatches(){
       <td>${m.stage || "-"}</td>
       <td>${m.group || "-"}</td>
       <td>${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}</td>
-      <td>${fmtDate(m.date)}</td>
+      <td>${fmtDateStr(m.date)}</td>
       <td>${m.code || "-"}</td>
       <td>${res}</td>
       ${state.admin ? `<td><button class="btn ghost btn-edit" data-id="${m.id}">Editar</button></td>` : ""}
@@ -265,56 +330,127 @@ async function loadMatchToForm(id){
   $("#match-b").value = m.bId || "";
   $("#match-stage").value = m.stage || "groups";
   $("#match-group").value = m.group || "";
-  $("#match-date").value = m.date ? new Date(m.date).toISOString().slice(0,16) : "";
+  // Guardar original. Usamos string local 'YYYY-MM-DDTHH:mm' p/ evitar conversão de fuso.
+  $("#match-date").value = m.date || "";
+  $("#match-date-orig").value = m.date || "";
+  $("#match-date").dataset.dirty = "false";
+  $("#match-date").oninput = ()=> $("#match-date").dataset.dirty = "true";
   $("#match-code").value = m.code || "";
   $("#match-result").value = m.result || "";
   showTab("partidas");
 }
-$("#match-reset").onclick = ()=>{ $("#match-form").reset(); $("#match-id").value=""; };
+$("#match-reset").onclick = ()=>{ $("#match-form").reset(); $("#match-id").value=""; $("#match-date").dataset.dirty="false"; };
 $("#match-delete").onclick = async ()=>{
   const id = $("#match-id").value;
   if(!id) return;
   if(confirm("Excluir partida?")) await deleteDoc(doc(db,"matches",id));
-  $("#match-form").reset(); $("#match-id").value="";
+  $("#match-form").reset(); $("#match-id").value=""; $("#match-date").dataset.dirty="false";
 };
 $("#match-form").addEventListener("submit", async (e)=>{
   e.preventDefault();
   const payload = {
-    aId: $("#match-a").value, bId: $("#match-b").value,
+    aId: $("#match-a").value,
+    bId: $("#match-b").value,
     stage: $("#match-stage").value,
     group: $("#match-group").value || null,
-    date: $("#match-date").value ? new Date($("#match-date").value).toISOString() : null,
     code: $("#match-code").value || null,
     result: $("#match-result").value || null
   };
+
+  // ✅ Corrigido: só atualiza a data se você mudar o campo
+  const isEdit = !!$("#match-id").value;
+  const dateDirty = $("#match-date").dataset.dirty === "true";
+  const dateVal = $("#match-date").value || null;
+  if(!isEdit){
+    // criação: podemos gravar date (ou null)
+    payload.date = dateVal;
+  }else if(dateDirty){
+    // edição: só altera se realmente mudou
+    payload.date = dateVal;
+  }
+
   try{
     const id = $("#match-id").value;
     if(id) await updateDoc(doc(db,"matches",id), payload);
     else await addDoc(collection(db,"matches"), payload);
-    $("#match-form").reset(); $("#match-id").value="";
+    $("#match-form").reset();
+    $("#match-id").value="";
+    $("#match-date").dataset.dirty="false";
   }catch(err){ alert("Erro: "+err.message); }
 });
 
-// ======= Admin: Posts =======
+// ======= Admin: Posts (com imagem) =======
 $("#post-form").addEventListener("submit", async (e)=>{
   e.preventDefault();
   const title = $("#post-title").value.trim();
-  const body = $("#post-body").value.trim();
-  await addDoc(collection(db,"posts"), { title, body, createdAt: serverTimestamp(), author: auth.currentUser?.email || "admin" });
-  $("#post-form").reset();
+  const body  = $("#post-body").value.trim();
+  const file  = $("#post-image").files[0];
+
+  let imageUrl = null;
+  try{
+    if(file){
+      const path = `posts/${Date.now()}_${file.name}`;
+      const r = ref(storage, path);
+      await uploadBytes(r, file);
+      imageUrl = await getDownloadURL(r);
+    }
+    await addDoc(collection(db,"posts"), { title, body, imageUrl, createdAt: serverTimestamp(), author: auth.currentUser?.email || "admin" });
+    $("#post-form").reset();
+  }catch(err){ alert("Erro ao publicar: "+err.message); }
 });
+function renderPostItem(p){
+  return `
+    <div class="post">
+      ${p.imageUrl ? `<img src="${p.imageUrl}" alt="imagem do comunicado">` : ""}
+      <div>
+        <h3>${p.title}</h3>
+        <p class="muted" style="margin-top:-6px">${p.author || ""} · ${p.createdAt?.toDate ? p.createdAt.toDate().toLocaleString("pt-BR") : ""}</p>
+        <p>${(p.body||"").replace(/\n/g,"<br>")}</p>
+      </div>
+    </div>
+  `;
+}
 function renderPosts(){
-  const html = state.posts.map(p=>`
-    <article class="card" style="margin-bottom:12px">
-      <h3>${p.title}</h3>
-      <p class="muted" style="margin-top:-6px">${p.author || ""} · ${p.createdAt?.toDate ? p.createdAt.toDate().toLocaleString("pt-BR") : ""}</p>
-      <p>${(p.body||"").replace(/\n/g,"<br>")}</p>
-    </article>
-  `).join("");
+  const html = state.posts.map(renderPostItem).join("");
   $("#posts-list").innerHTML = html || `<p class="muted">Sem comunicados.</p>`;
 }
 
+// ======= Chat =======
+$("#chat-form").addEventListener("submit", async (e)=>{
+  e.preventDefault();
+  const text = $("#chat-text").value.trim();
+  if(!text) return;
+  if(!auth.currentUser){ alert("Entre para enviar mensagens."); return; }
+  const expireAt = new Date(Date.now() + 24*60*60*1000); // +24h
+  await addDoc(collection(db,"chat"), {
+    text, author: auth.currentUser.email, createdAt: serverTimestamp(), expireAt
+  });
+  $("#chat-text").value = "";
+});
+function renderChat(){
+  const html = state.chat.map(m=>{
+    const when = m.createdAt?.toDate ? m.createdAt.toDate().toLocaleString("pt-BR") : "";
+    return `<div class="chat-item">
+      <div class="meta">${m.author} · ${when}</div>
+      <div>${(m.text||"").replace(/\n/g,"<br>")}</div>
+    </div>`;
+  }).join("");
+  $("#chat-list").innerHTML = html || `<p class="muted">Sem mensagens nas últimas 24h.</p>`;
+}
+
 // ======= Admin: Semifinais =======
+function fillPlayersSelects(){
+  const selects = ["match-a","match-b","semi1-a","semi1-b","semi2-a","semi2-b"];
+  selects.forEach(id=>{
+    const el = $("#"+id);
+    if(!el) return;
+    el.innerHTML = "";
+    option(el, "", "— selecione —");
+    state.players.forEach(p => option(el, p.id, `${p.name} (${p.group})`));
+  });
+  const listSel = $("#player-select");
+  if(listSel && !listSel.value) renderPlayerSelect();
+}
 $("#semi-save").onclick = async ()=>{
   const pairs = [
     { a: $("#semi1-a").value, b: $("#semi1-b").value, code: $("#semi-code").value ? $("#semi-code").value+"-1" : "SF-1" },
@@ -344,7 +480,9 @@ $("#seed-btn").onclick = async ()=>{
     else { nameToId[name] = q.docs[0].id; }
   }
 
-  // Matches according ao sorteio anterior (sem jogo = jogador folga)
+  // Matches grupos (datas locais simples, sem timezone)
+  const now = new Date();
+  const base = (h)=>{ const d=new Date(now.getTime()+h*3600000); return d.toISOString().slice(0,16); }; // 'YYYY-MM-DDTHH:mm'
   const roundsA = [
     ["Eudison","Yuri"],["Rhuan","Luís Felipe"],
     ["Hugo","Yuri"],["Eudison","Rhuan"],
@@ -359,27 +497,28 @@ $("#seed-btn").onclick = async ()=>{
     ["Kelvin","Davi"],["Alyson","Marcos"],
     ["Kelvin","Marcos"],["Alyson","Wemerson"]
   ];
-
-  const baseDate = new Date(); // datas fictícias
   let i=0;
   for(const [a,b] of roundsA){
     await addDoc(collection(db,"matches"),{
       aId:nameToId[a], bId:nameToId[b], stage:"groups", group:"A",
-      date: new Date(baseDate.getTime() + (i++)*36e5).toISOString(), code:`GA-${i}`, result:null
+      date: base(i++), code:`GA-${i}`, result:null
     });
   }
   for(const [a,b] of roundsB){
     await addDoc(collection(db,"matches"),{
       aId:nameToId[a], bId:nameToId[b], stage:"groups", group:"B",
-      date: new Date(baseDate.getTime() + (i++)*36e5).toISOString(), code:`GB-${i}`, result:null
+      date: base(i++), code:`GB-${i}`, result:null
     });
   }
 
   alert("Seed concluído!");
 };
 
-// ======= Players form fill on row click (optional enhancement) =======
-$("#players-list").addEventListener("click", (e)=>{
+// ======= Listeners extras =======
+$("#players-cards").addEventListener("click", (e)=>{
+  // (opcional) selecionar jogador ao clicar no card
+});
+$("#players-list")?.addEventListener("click", (e)=>{
   const tr = e.target.closest("tr"); if(!tr) return;
   const name = tr.children[0]?.textContent;
   const p = state.players.find(x=>x.name===name);
