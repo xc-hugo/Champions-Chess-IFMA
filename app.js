@@ -28,10 +28,10 @@ function option(el, value, label){ const o=document.createElement("option"); o.v
 // Slug/username helpers
 function slugifyName(name){
   return (name || "")
-    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")  // remove acentos
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")                      // espaços/símbolos -> "-"
-    .replace(/^-+|-+$/g, "")                          // aparar "-"
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
     .slice(0, 20) || "user";
 }
 function shortUid(uid){ return (uid || "").slice(-4) || Math.floor(Math.random()*9999).toString().padStart(4,"0"); }
@@ -47,15 +47,14 @@ let state = {
   chat: []
 };
 
-// ========== Auth UI (Google only) ==========
-// Botão Entrar → Google
+// ========== Auth (Google only) ==========
 $("#btn-open-login")?.addEventListener("click", async ()=>{
   try { await loginWithGoogle(); }
   catch(err){ alert("Erro ao entrar com Google: " + err.message); }
 });
 $("#btn-logout")?.addEventListener("click", async ()=> { await logout(); });
 
-// Perfil (Firestore: profiles/{uid})
+// Perfil (profiles/{uid})
 async function loadProfile(uid){
   if(!uid){ state.profile=null; renderProfile(); return; }
   const snap = await getDoc(doc(db,"profiles",uid));
@@ -74,11 +73,9 @@ $("#profile-form")?.addEventListener("submit", async (e)=>{
     await runTransaction(db, async (tx)=>{
       const profRef = doc(db, "profiles", state.user.uid);
 
-      // ler perfil atual (para soltar o handle antigo, se houver)
+      // soltar username antigo (se houver)
       const profSnap = await tx.get(profRef);
       const oldUsername = profSnap.exists() ? (profSnap.data().username || null) : null;
-
-      // 1) se tinha username antigo, deletar o doc /usernames/{old}
       if(oldUsername){
         const oldRef = doc(db, "usernames", oldUsername);
         const oldSnap = await tx.get(oldRef);
@@ -87,25 +84,21 @@ $("#profile-form")?.addEventListener("submit", async (e)=>{
         }
       }
 
-      // 2) tentar reservar o handle "base"
+      // reservar novo username
       let chosen = base;
       const tryRef = doc(db, "usernames", base);
       const trySnap = await tx.get(tryRef);
 
       if(trySnap.exists()){
-        // já existe → usa fallback determinístico por UID
         chosen = fallback;
         const fbRef = doc(db, "usernames", chosen);
         const fbSnap = await tx.get(fbRef);
-        if(fbSnap.exists()){
-          throw new Error("USERNAME_TAKEN_FALLBACK");
-        }
+        if(fbSnap.exists()) throw new Error("USERNAME_TAKEN_FALLBACK");
         tx.set(fbRef, { uid: state.user.uid, createdAt: serverTimestamp() });
       } else {
         tx.set(tryRef, { uid: state.user.uid, createdAt: serverTimestamp() });
       }
 
-      // 3) salvar perfil com displayName + username escolhido
       tx.set(profRef, {
         displayName: display,
         username: chosen,
@@ -114,15 +107,12 @@ $("#profile-form")?.addEventListener("submit", async (e)=>{
       }, { merge: true });
     });
 
-    // Atualiza o Auth.displayName (não afeta unicidade)
     await setDisplayName(state.user, display);
 
-    // reload perfil para refletir username
     const snap = await getDoc(doc(db,"profiles",state.user.uid));
     state.profile = snap.exists() ? snap.data() : null;
     renderProfile();
     alert("Perfil atualizado!");
-
   }catch(err){
     if(err.message === "USERNAME_TAKEN_FALLBACK"){
       alert("Não foi possível reservar um username único. Tente novamente.");
@@ -138,19 +128,16 @@ $("#profile-form")?.addEventListener("submit", async (e)=>{
 watchAuth(async (user)=>{
   state.user = user;
 
-  // header
   $("#btn-open-login")?.classList.toggle("hidden", !!user);
   $("#btn-logout")?.classList.toggle("hidden", !user);
   $("#user-chip")?.classList.toggle("hidden", !user);
   if($("#user-email")) $("#user-email").textContent = user ? (user.displayName || user.email) : "";
 
-  // admin toggles
   state.admin = user ? await isAdmin(user.uid) : false;
   $("#admin-badge")?.classList.toggle("hidden", !state.admin);
   $("#tab-admin")?.classList.toggle("hidden", !state.admin);
   $$(".admin-only").forEach(el => el.classList.toggle("hidden", !state.admin));
 
-  // chat input só logado
   $("#chat-form")?.classList.toggle("hidden", !user);
   $("#chat-login-hint")?.classList.toggle("hidden", !!user);
 
@@ -193,7 +180,7 @@ onSnapshot(query(colChat, orderBy("createdAt","desc")), snap=>{
   renderChat();
 });
 
-// ========== Estatísticas (só fase de grupos conta 3/1/0) ==========
+// ========== Estatísticas (3/1/0 só nos grupos) ==========
 function statsFromMatches(){
   const stats = {};
   for(const p of state.players){
@@ -216,25 +203,22 @@ function statsFromMatches(){
   return stats;
 }
 
-// ========== Home (4 partidas hoje ou do próximo dia com partidas) ==========
+// ========== Home (4 partidas hoje ou próximo dia) ==========
 function renderHome(){
   const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
-  const scheduled = state.matches.filter(m => !!m.date).slice(); // já ordenado por 'date'
+  const scheduled = state.matches.filter(m => !!m.date).slice();
   const today = new Date(); const start = new Date(today); start.setHours(0,0,0,0);
   const end   = new Date(today); end.setHours(23,59,59,999);
   const isSameDay = (a,b)=> a.getFullYear()==b.getFullYear() && a.getMonth()==b.getMonth() && a.getDate()==b.getDate();
 
   let pick = scheduled.filter(m=>{ const d = new Date(m.date); return d>=start && d<=end; });
   if(pick.length===0){
-    // encontra o próximo dia futuro com partidas
     let nextDay = null;
     for(const m of scheduled){
       const d = new Date(m.date);
       if(d > end){ nextDay = d; break; }
     }
-    if(nextDay){
-      pick = scheduled.filter(m => isSameDay(new Date(m.date), nextDay));
-    }
+    if(nextDay){ pick = scheduled.filter(m => isSameDay(new Date(m.date), nextDay)); }
   }
   pick = pick.slice(0,4);
 
@@ -258,7 +242,7 @@ function renderHome(){
   if($("#home-posts")) $("#home-posts").innerHTML = posts || `<p class="muted">Sem comunicados.</p>`;
 }
 
-// ========== Players (separado por Grupo + busca + seleção) ==========
+// ========== Players ==========
 function renderPlayers(){
   const stats = statsFromMatches();
   const byGroup = { A:[], B:[] };
@@ -323,7 +307,7 @@ function renderPlayerDetails(){
   `;
 }
 
-// ========== Tabela de Pontos ==========
+// ========== Tabela ==========
 function renderTables(){
   const stats = statsFromMatches();
   const groups = {A:[], B:[]};
@@ -355,7 +339,7 @@ function renderTables(){
   });
 }
 
-// ========== Partidas (organizado) ==========
+// ========== Partidas (inclui 'Adiado') ==========
 function renderMatches(){
   const stageF = $("#filter-stage")?.value || "all";
   const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
@@ -372,7 +356,11 @@ function renderMatches(){
       <thead><tr><th>Etapa</th><th>Grupo</th><th>Partida</th><th>Data/Hora</th><th>Código</th><th>Resultado</th>${state.admin?`<th>Ações</th>`:""}</tr></thead>
       <tbody>
         ${items.map(m=>{
-          const res = m.result==="A"? mapP[m.aId] : m.result==="B"? mapP[m.bId] : m.result==="draw"? "Empate" : "Pendente";
+          const res = m.result==="A" ? mapP[m.aId]
+                  : m.result==="B" ? mapP[m.bId]
+                  : m.result==="draw" ? "Empate"
+                  : m.result==="postponed" ? "Adiado"
+                  : "Pendente";
           return `<tr data-id="${m.id}">
             <td>${m.stage||"-"}</td>
             <td>${m.group||"-"}</td>
@@ -401,11 +389,16 @@ function renderMatches(){
     </div>
   `;
   const box = $("#matches-list");
-  if(box){ box.innerHTML = html; if(state.admin){ $$(".btn-edit").forEach(b => b.onclick = () => loadMatchToForm(b.dataset.id)); } }
+  if(box){
+    box.innerHTML = html;
+    if(state.admin){
+      $$(".btn-edit").forEach(b => b.onclick = () => loadMatchToForm(b.dataset.id));
+    }
+  }
 }
 $("#filter-stage")?.addEventListener("change", renderMatches);
 
-// ========== Admin: Players CRUD ==========
+// ========== Admin: Players ==========
 function fillPlayersSelects(){
   const selects = ["match-a","match-b","semi1-a","semi1-b","semi2-a","semi2-b"];
   selects.forEach(id=>{
@@ -437,16 +430,15 @@ $("#player-delete")?.addEventListener("click", async ()=>{
   $("#player-form").reset(); $("#player-id").value = "";
 });
 
-// ========== Admin: Matches CRUD ==========
+// ========== Admin: Matches ==========
 async function loadMatchToForm(id){
   const m = state.matches.find(x=>x.id===id);
   if(!m) return;
   $("#match-id").value = m.id;
   $("#match-a").value = m.aId || "";
-  $("#match-b").value = m.bId || "";
+  $("#match-b").value = m.bId || ""
   $("#match-stage").value = m.stage || "groups";
   $("#match-group").value = m.group || "";
-  // ✅ Data só muda se usuário editar
   $("#match-date").value = m.date || "";
   $("#match-date-orig").value = m.date || "";
   $("#match-date").dataset.dirty = "false";
@@ -477,9 +469,9 @@ $("#match-form")?.addEventListener("submit", async (e)=>{
   const dateDirty = $("#match-date").dataset.dirty === "true";
   const dateVal = $("#match-date").value || null;
   if(!isEdit){
-    payload.date = dateVal;           // criação grava se houver
+    payload.date = dateVal;
   }else if(dateDirty){
-    payload.date = dateVal;           // edição só muda se editou
+    payload.date = dateVal;
   }
 
   try{
@@ -490,37 +482,54 @@ $("#match-form")?.addEventListener("submit", async (e)=>{
   }catch(err){ alert("Erro: "+err.message); }
 });
 
-// ========== Posts (sem anexo) ==========
+// ========== Posts (com e-mail, admin pode apagar) ==========
 $("#post-form")?.addEventListener("submit", async (e)=>{
   e.preventDefault();
   const title = $("#post-title").value.trim();
   const body  = $("#post-body").value.trim();
   try{
     await addDoc(collection(db,"posts"), {
-      title, body,
+      title,
+      body,
       createdAt: serverTimestamp(),
-      author: state.profile?.displayName || auth.currentUser?.displayName || auth.currentUser?.email || "admin"
+      author: state.profile?.displayName || auth.currentUser?.displayName || auth.currentUser?.email || "admin",
+      authorEmail: auth.currentUser?.email || ""
     });
     $("#post-form").reset();
   }catch(err){ alert("Erro ao publicar: "+err.message); }
 });
 function renderPostItem(p){
+  const by = `${p.authorEmail || ""} — ${p.author || ""}`;
   return `
-    <div class="post">
-      <div>
-        <h3>${p.title}</h3>
-        <p class="muted" style="margin-top:-6px">${p.author || ""} · ${p.createdAt?.toDate ? p.createdAt.toDate().toLocaleString("pt-BR") : ""}</p>
-        <p>${(p.body||"").replace(/\n/g,"<br>")}</p>
+    <div class="post" data-id="${p.id}">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+        <div>
+          <h3>${p.title}</h3>
+          <p class="muted" style="margin-top:-6px">${by} · ${p.createdAt?.toDate ? p.createdAt.toDate().toLocaleString("pt-BR") : ""}</p>
+          <p>${(p.body||"").replace(/\n/g,"<br>")}</p>
+        </div>
+        ${state.admin ? `<button class="btn danger small btn-del-post" data-id="${p.id}">Apagar</button>` : ""}
       </div>
     </div>
   `;
 }
 function renderPosts(){
   const html = state.posts.map(renderPostItem).join("");
-  if($("#posts-list")) $("#posts-list").innerHTML = html || `<p class="muted">Sem comunicados.</p>`;
+  if($("#posts-list")) {
+    $("#posts-list").innerHTML = html || `<p class="muted">Sem comunicados.</p>`;
+    if(state.admin){
+      $$(".btn-del-post").forEach(b=>{
+        b.onclick = async ()=>{
+          if(confirm("Apagar este comunicado?")){
+            await deleteDoc(doc(db,"posts", b.dataset.id));
+          }
+        };
+      });
+    }
+  }
 }
 
-// ========== Chat (expira 24h) ==========
+// ========== Chat (com e-mail, admin pode apagar; expira 24h) ==========
 $("#chat-form")?.addEventListener("submit", async (e)=>{
   e.preventDefault();
   if(!auth.currentUser){ alert("Entre para enviar mensagens."); return; }
@@ -530,6 +539,7 @@ $("#chat-form")?.addEventListener("submit", async (e)=>{
   await addDoc(collection(db,"chat"), {
     text,
     author: state.profile?.displayName || auth.currentUser.displayName || auth.currentUser.email,
+    authorEmail: auth.currentUser?.email || "",
     username: state.profile?.username || null,
     createdAt: serverTimestamp(),
     expireAt
@@ -540,12 +550,29 @@ function renderChat(){
   const html = state.chat.map(m=>{
     const when = m.createdAt?.toDate ? m.createdAt.toDate().toLocaleString("pt-BR") : "";
     const who = m.username ? `${m.author} (@${m.username})` : m.author;
-    return `<div class="chat-item">
-      <div class="meta">${who} · ${when}</div>
-      <div>${(m.text||"").replace(/\n/g,"<br>")}</div>
+    const by  = `${m.authorEmail || ""} — ${who}`;
+    return `<div class="chat-item" data-id="${m.id}">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
+        <div>
+          <div class="meta">${by} · ${when}</div>
+          <div>${(m.text||"").replace(/\n/g,"<br>")}</div>
+        </div>
+        ${state.admin ? `<button class="btn danger small btn-del-chat" data-id="${m.id}">Apagar</button>` : ""}
+      </div>
     </div>`;
   }).join("");
-  if($("#chat-list")) $("#chat-list").innerHTML = html || `<p class="muted">Sem mensagens nas últimas 24h.</p>`;
+  if($("#chat-list")) {
+    $("#chat-list").innerHTML = html || `<p class="muted">Sem mensagens nas últimas 24h.</p>`;
+    if(state.admin){
+      $$(".btn-del-chat").forEach(b=>{
+        b.onclick = async ()=>{
+          if(confirm("Apagar esta mensagem do chat?")){
+            await deleteDoc(doc(db,"chat", b.dataset.id));
+          }
+        };
+      });
+    }
+  }
 }
 
 // ========== Perfil — render ==========
@@ -618,7 +645,7 @@ $("#seed-btn")?.addEventListener("click", async ()=>{
     else { nameToId[name] = q.docs[0].id; }
   }
 
-  // Matches da Fase de Grupos — string 'YYYY-MM-DDTHH:mm' (ordem estável)
+  // Matches — string 'YYYY-MM-DDTHH:mm' (ordem estável)
   const now = new Date();
   const base = (h)=>{ const d=new Date(now.getTime()+h*3600000); return d.toISOString().slice(0,16); };
 
@@ -652,11 +679,11 @@ $("#seed-btn")?.addEventListener("click", async ()=>{
   }
 
   // Posts e chat
-  await addDoc(collection(db,"posts"), { title:"Bem-vindos!", body:"Início do campeonato. Boa sorte a todos!", createdAt: serverTimestamp(), author: auth.currentUser?.displayName || auth.currentUser?.email || "admin" });
-  await addDoc(collection(db,"posts"), { title:"Regras", body:"Pontuação 3-1-0 (fase de grupos). Top-2 avança (G2).", createdAt: serverTimestamp(), author: auth.currentUser?.displayName || auth.currentUser?.email || "admin" });
+  await addDoc(collection(db,"posts"), { title:"Bem-vindos!", body:"Início do campeonato. Boa sorte a todos!", createdAt: serverTimestamp(), author: auth.currentUser?.displayName || auth.currentUser?.email || "admin", authorEmail: auth.currentUser?.email || "" });
+  await addDoc(collection(db,"posts"), { title:"Regras", body:"Pontuação 3-1-0 (fase de grupos). Top-2 avança (G2).", createdAt: serverTimestamp(), author: auth.currentUser?.displayName || auth.currentUser?.email || "admin", authorEmail: auth.currentUser?.email || "" });
 
   const expireAt = new Date(Date.now() + 24*60*60*1000);
-  await addDoc(collection(db,"chat"), { text:"Chat aberto! Respeito e esportividade. ♟️", author: auth.currentUser?.displayName || auth.currentUser?.email || "admin", username: state.profile?.username || null, createdAt: serverTimestamp(), expireAt });
+  await addDoc(collection(db,"chat"), { text:"Chat aberto! Respeito e esportividade. ♟️", author: auth.currentUser?.displayName || auth.currentUser?.email || "admin", authorEmail: auth.currentUser?.email || "", username: state.profile?.username || null, createdAt: serverTimestamp(), expireAt });
 
   alert("Seed concluído!");
 });
