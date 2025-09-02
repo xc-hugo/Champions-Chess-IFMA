@@ -220,6 +220,7 @@
     </section>
 
     <!-- POSTS -->
+        <!-- POSTS -->
     <section id="posts" class="view">
       <div class="card">
         <h2>Comunicados</h2>
@@ -228,7 +229,7 @@
 
       <div id="admin-posts" class="card admin-only hidden">
         <h3>Novo Comunicado</h3>
-        <form id="post-form" class="form" enctype="multipart/form-data">
+        <form id="post-form" class="form">
           <div class="row">
             <label>Título</label>
             <input id="post-title" required/>
@@ -236,10 +237,6 @@
           <div class="row">
             <label>Mensagem</label>
             <textarea id="post-body" rows="4" required></textarea>
-          </div>
-          <div class="row">
-            <label>Imagem (opcional)</label>
-            <input id="post-image" type="file" accept="image/*"/>
           </div>
           <div class="row end">
             <button class="btn" type="submit">Publicar</button>
@@ -352,3 +349,4 @@
   <script type="module" src="app.js"></script>
 </body>
 </html>
+
