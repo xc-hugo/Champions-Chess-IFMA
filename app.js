@@ -1,4 +1,4 @@
-// app.js — Champions Chess IFMA
+// app.js — Champions Chess IFMA (ESM; usa firebase.js do projeto)
 
 import {
   auth, db,
@@ -11,19 +11,9 @@ import {
 const $  = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
 
-function showTab(id){
-  if(!id) id = "home";
-  $$(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === id));
-  $$(".view").forEach(v => v.classList.toggle("visible", v.id === id));
-  if(location.hash.replace("#","") !== id) location.hash = id;
-  // sempre ir pro topo para ver o título da aba
-  window.scrollTo({ top: 0, behavior: "smooth" });
+function confirmAction(msg){
+  return new Promise(res=> res(window.confirm(msg)));
 }
-window.addEventListener("hashchange", ()=> showTab(location.hash.replace("#","") || "home"));
-$$(".tab").forEach(b => b.onclick = () => showTab(b.dataset.tab));
-showTab(location.hash.replace("#","") || "home");
-
-function option(el, value, label){ const o=document.createElement("option"); o.value=value; o.textContent=label; el.appendChild(o); }
 
 // Trata strings "YYYY-MM-DDTHH:mm" como horário LOCAL (sem fuso)
 function parseLocalDate(str){
@@ -60,6 +50,33 @@ function slugifyName(name){
     .replace(/^-+|-+$/g, "").slice(0, 20) || "user";
 }
 function shortUid(uid){ return (uid || "").slice(-4) || Math.floor(Math.random()*9999).toString().padStart(4,"0"); }
+
+/* ===== Navbar fixa: compensação e scroll pro topo ===== */
+function applyTopbarOffset(){
+  const header = document.querySelector(".topbar");
+  const h = header ? header.offsetHeight : 0;
+  document.documentElement.style.setProperty("--topbar-h", `${h}px`);
+  document.documentElement.style.scrollPaddingTop = `${h}px`;
+}
+function showTab(id){
+  if(!id) id = "home";
+  $$(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === id));
+  $$(".view").forEach(v => v.classList.toggle("visible", v.id === id));
+  if(location.hash.replace("#","") !== id) location.hash = id;
+  applyTopbarOffset();
+  // sobe pro topo sem "parar antes"
+  window.scrollTo({ top: 0, behavior: "auto" });
+}
+window.addEventListener("load", applyTopbarOffset);
+window.addEventListener("resize", applyTopbarOffset);
+window.addEventListener("hashchange", ()=> showTab(location.hash.replace("#","") || "home"));
+$$(".tab").forEach(b => {
+  b.addEventListener("click", (e)=>{
+    e.preventDefault();
+    showTab(b.dataset.tab);
+  });
+});
+showTab(location.hash.replace("#","") || "home");
 
 // scroll helper pra gerenciador de partidas
 function scrollToManageMatches(){
@@ -132,7 +149,7 @@ function setAdminFlag(flag){
   if (changed) { renderPosts(); renderChat(); renderMatches(); renderHome(); renderAdminSemisList(); }
 }
 
-// perfil + username único (correção de transação: todas leituras antes das escritas)
+// perfil + username único (todas leituras antes das escritas)
 $("#profile-form")?.addEventListener("submit", async (e)=>{
   e.preventDefault();
   if(!state.user) return alert("Entre para editar o perfil.");
@@ -239,6 +256,7 @@ onSnapshot(query(colPlayers, orderBy("name")), snap=>{
 
 onSnapshot(query(colMatches, orderBy("date")), async (snap)=>{
   const newMatches = snap.docs.map(d => ({ id:d.id, ...d.data() }));
+
   // anunciar vit/emp/der automaticamente (diff com prevResults)
   const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
   for(const m of newMatches){
@@ -264,8 +282,8 @@ onSnapshot(query(colMatches, orderBy("date")), async (snap)=>{
   state.matches = newMatches;
   renderMatches(); renderTables(); renderPlayerDetails(); renderHome(); renderAdminSemisList();
 
-  autoPostponeOverdueMatches();        // adiar 24h após data
-  checkAndAutoCreateSemis();           // criar semis + post quando F. Grupos terminar
+  autoPostponeOverdueMatches(); // adiar 24h após data
+  checkAndAutoCreateSemis();    // criar semis + post quando F. Grupos terminar
 });
 
 onSnapshot(query(colPosts, orderBy("createdAt","desc")), snap=>{
@@ -346,9 +364,8 @@ function renderHome(){
     if (state.admin) {
       document.querySelectorAll("#home-posts .btn-del-post").forEach(b=>{
         b.onclick = async ()=>{
-          if(confirm("Apagar este comunicado?")){
-            await deleteDoc(doc(db,"posts", b.dataset.id));
-          }
+          if(!(await confirmAction("Apagar este comunicado?"))) return;
+          await deleteDoc(doc(db,"posts", b.dataset.id));
         };
       });
     }
@@ -587,6 +604,7 @@ async function checkAndAutoCreateSemis(){
 }
 
 /* ========================= Admin: Players ========================= */
+function option(el, value, label){ const o=document.createElement("option"); o.value=value; o.textContent=label; el.appendChild(o); }
 function fillPlayersSelects(){
   const selects = ["match-a","match-b","semi1-a","semi1-b","semi2-a","semi2-b"];
   selects.forEach(id=>{
@@ -613,7 +631,8 @@ $("#player-reset")?.addEventListener("click", ()=>{ $("#player-form").reset(); $
 $("#player-delete")?.addEventListener("click", async ()=>{
   const id = $("#player-id").value;
   if(!id) return;
-  if(confirm("Excluir jogador?")) await deleteDoc(doc(db,"players",id));
+  if(!(await confirmAction("Excluir jogador?"))) return;
+  await deleteDoc(doc(db,"players",id));
   $("#player-form").reset(); $("#player-id").value = "";
 });
 
@@ -641,7 +660,8 @@ $("#match-reset")?.addEventListener("click", ()=>{ $("#match-form").reset(); $("
 $("#match-delete")?.addEventListener("click", async ()=>{
   const id = $("#match-id").value;
   if(!id) return;
-  if(confirm("Excluir partida?")) await deleteDoc(doc(db,"matches",id));
+  if(!(await confirmAction("Excluir partida?"))) return;
+  await deleteDoc(doc(db,"matches",id));
   $("#match-form").reset(); $("#match-id").value=""; $("#match-date").dataset.dirty="false";
 });
 $("#match-form")?.addEventListener("submit", async (e)=>{
@@ -705,9 +725,8 @@ function renderPosts(){
     if(state.admin){
       $$(".btn-del-post").forEach(b=>{
         b.onclick = async ()=>{
-          if(confirm("Apagar este comunicado?")){
-            await deleteDoc(doc(db,"posts", b.dataset.id));
-          }
+          if(!(await confirmAction("Apagar este comunicado?"))) return;
+          await deleteDoc(doc(db,"posts", b.dataset.id));
         };
       });
     }
@@ -750,9 +769,8 @@ function renderChat(){
     if(state.admin){
       $$(".btn-del-chat").forEach(b=>{
         b.onclick = async ()=>{
-          if(confirm("Apagar esta mensagem do chat?")){
-            await deleteDoc(doc(db,"chat", b.dataset.id));
-          }
+          if(!(await confirmAction("Apagar esta mensagem do chat?"))) return;
+          await deleteDoc(doc(db,"chat", b.dataset.id));
         };
       });
     }
@@ -815,7 +833,7 @@ function renderAdminSemisList(){
 /* ========================= Admin: Reset Torneio ========================= */
 $("#btn-reset-tournament")?.addEventListener("click", async ()=>{
   if(!state.admin) return alert("Apenas admins.");
-  if(!confirm("Tem certeza que deseja RESETAR o torneio? (apaga partidas, posts e chat)")) return;
+  if(!(await confirmAction("Tem certeza que deseja RESETAR o torneio? (apaga partidas, posts e chat)"))) return;
 
   async function wipe(colName){
     const snap = await getDocs(collection(db, colName));
@@ -835,7 +853,7 @@ $("#btn-reset-tournament")?.addEventListener("click", async ()=>{
 /* ========================= Seed (Admin) ========================= */
 $("#seed-btn")?.addEventListener("click", async ()=>{
   if(!state.admin){ alert("Apenas admins."); return; }
-  if(!confirm("Adicionar dados de exemplo?")) return;
+  if(!(await confirmAction("Adicionar dados de exemplo?"))) return;
 
   // players
   const players = [
@@ -854,7 +872,7 @@ $("#seed-btn")?.addEventListener("click", async ()=>{
   function localStrPlusHours(h){
     const d = new Date(); d.setHours(d.getHours()+h);
     return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-    }
+  }
 
   const roundsA = [
     ["Eudison","Yuri"],["Rhuan","Luís Felipe"],
