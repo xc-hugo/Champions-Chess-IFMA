@@ -1,12 +1,12 @@
 <!doctype html>
 <html lang="pt-br">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Champions Chess IFMA</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="styles.css"/>
 </head>
 <body>
   <header class="site-header">
@@ -29,18 +29,47 @@
   </header>
 
   <nav class="tabs">
-    <button class="tab active" data-tab="regulamento">Regulamento</button>
+    <button class="tab active" data-tab="home">Home</button>
+    <button class="tab" data-tab="regulamento">Regulamento</button>
     <button class="tab" data-tab="partidas">Partidas</button>
     <button class="tab" data-tab="tabela">Tabela</button>
     <button class="tab" data-tab="players">Players</button>
     <button class="tab" data-tab="posts">Post</button>
-    <button class="tab" data-tab="sobre">Sobre</button>
+    <button class="tab" data-tab="chat">Chat</button>
     <button id="tab-admin" class="tab admin-only hidden" data-tab="admin">Admin</button>
   </nav>
 
   <main class="container">
+    <!-- HOME -->
+    <section id="home" class="view visible">
+      <div class="grid-2">
+        <div class="card">
+          <h2>Bem-vindo ao Champions Chess IFMA</h2>
+          <p>Veja abaixo um resumo do campeonato. Acesse as abas para detalhes.</p>
+          <ul class="list">
+            <li>Formato: 10 jogadores, 2 grupos de 5, pontuação 3-1-0 na fase de grupos.</li>
+            <li>Classificam-se os 2 melhores de cada grupo (G2) para as semifinais.</li>
+            <li>Resultados e partidas monitoradas com comprovação.</li>
+          </ul>
+          <div class="cta-row">
+            <a class="btn" href="#regulamento" onclick="location.hash='regulamento'">Ver Regulamento</a>
+            <a class="btn ghost" href="ChampionsChessIFMA.pdf" target="_blank" rel="noopener">Abrir PDF</a>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Próximas partidas</h2>
+          <div id="home-next" class="table"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Últimos comunicados</h2>
+        <div id="home-posts"></div>
+      </div>
+    </section>
+
     <!-- REGULAMENTO -->
-    <section id="regulamento" class="view visible">
+    <section id="regulamento" class="view">
       <div class="grid-2">
         <div class="card">
           <h2>Regulamento</h2>
@@ -52,7 +81,6 @@
             <li>Partidas monitoradas com registro em print e validação.</li>
           </ul>
         </div>
-
         <div class="card">
           <h2>PDF (pré-visualização)</h2>
           <div class="pdf-wrap">
@@ -92,7 +120,8 @@
       <div id="admin-matches" class="card admin-only hidden">
         <h3>Gerenciar Partidas</h3>
         <form id="match-form" class="form">
-          <input type="hidden" id="match-id" />
+          <input type="hidden" id="match-id"/>
+          <input type="hidden" id="match-date-orig"/>
           <div class="row">
             <label>Jogador A</label>
             <select id="match-a" required></select>
@@ -116,9 +145,9 @@
           </div>
           <div class="row">
             <label>Data/Hora</label>
-            <input id="match-date" type="datetime-local" required />
+            <input id="match-date" type="datetime-local"/>
             <label>Código da partida</label>
-            <input id="match-code" placeholder="ex.: SF1-IFMA" />
+            <input id="match-code" placeholder="ex.: SF1-IFMA"/>
           </div>
           <div class="row">
             <label>Resultado</label>
@@ -143,11 +172,11 @@
       <div class="grid-2">
         <div class="card">
           <h2>Tabela – Grupo A</h2>
-          <div id="table-A" class="table"></div>
+          <div id="table-A" class="table standings"></div>
         </div>
         <div class="card">
           <h2>Tabela – Grupo B</h2>
-          <div id="table-B" class="table"></div>
+          <div id="table-B" class="table standings"></div>
         </div>
       </div>
     </section>
@@ -157,9 +186,8 @@
       <div class="grid-2">
         <div class="card">
           <h2>Jogadores</h2>
-          <div id="players-list" class="table"></div>
+          <div id="players-cards" class="players-grid"></div>
         </div>
-
         <div class="card">
           <h2>Detalhes do Jogador</h2>
           <div class="row">
@@ -172,10 +200,10 @@
       <div id="admin-players" class="card admin-only hidden">
         <h3>Gerenciar Jogadores</h3>
         <form id="player-form" class="form">
-          <input type="hidden" id="player-id" />
+          <input type="hidden" id="player-id"/>
           <div class="row">
             <label>Nome</label>
-            <input id="player-name" required />
+            <input id="player-name" required/>
             <label>Grupo</label>
             <select id="player-group" required>
               <option value="A">A</option>
@@ -200,14 +228,18 @@
 
       <div id="admin-posts" class="card admin-only hidden">
         <h3>Novo Comunicado</h3>
-        <form id="post-form" class="form">
+        <form id="post-form" class="form" enctype="multipart/form-data">
           <div class="row">
             <label>Título</label>
-            <input id="post-title" required />
+            <input id="post-title" required/>
           </div>
           <div class="row">
             <label>Mensagem</label>
             <textarea id="post-body" rows="4" required></textarea>
+          </div>
+          <div class="row">
+            <label>Imagem (opcional)</label>
+            <input id="post-image" type="file" accept="image/*"/>
           </div>
           <div class="row end">
             <button class="btn" type="submit">Publicar</button>
@@ -216,16 +248,22 @@
       </div>
     </section>
 
-    <!-- SOBRE -->
-    <section id="sobre" class="view">
+    <!-- CHAT -->
+    <section id="chat" class="view">
       <div class="card">
-        <h2>Sobre o Torneio</h2>
-        <p>O Champions Chess IFMA promove integração, raciocínio lógico e espírito esportivo entre os estudantes. Este site exibe tabela, partidas, regulamento e comunicados. A área de administração permite controlar datas, resultados, informações dos jogadores e as semifinais.</p>
-        <ul class="list">
-          <li>Pontuação Grupos: 3–1–0</li>
-          <li>Semifinais/Final com registro monitorado</li>
-          <li>Logs e posts para transparência</li>
-        </ul>
+        <h2>Chat da Comunidade</h2>
+        <p class="muted">Apenas usuários logados podem enviar mensagens. Mensagens expiram após 24h.</p>
+        <div id="chat-list" class="chat-list"></div>
+        <form id="chat-form" class="form chat-form">
+          <div class="row">
+            <label>Mensagem</label>
+            <input id="chat-text" placeholder="Escreva aqui..." maxlength="500"/>
+          </div>
+          <div class="row end">
+            <button class="btn" type="submit">Enviar</button>
+          </div>
+        </form>
+        <p id="chat-login-hint" class="muted hidden">Entre para participar do chat.</p>
       </div>
     </section>
 
@@ -234,7 +272,7 @@
       <div class="grid-2">
         <div class="card">
           <h2>Semifinais</h2>
-          <p>Cadastre as semifinais (com código identificador) e ajuste resultados/datas na aba <b>Partidas</b>.</p>
+          <p>Cadastre as semifinais (com código identificador) e ajuste resultados/datas em <b>Partidas</b>.</p>
           <form id="semi-form" class="form">
             <div class="row">
               <label>Semi 1 – 1ºA × 2ºB</label>
@@ -248,7 +286,7 @@
             </div>
             <div class="row">
               <label>Código padrão</label>
-              <input id="semi-code" placeholder="ex.: SF-IFMA" />
+              <input id="semi-code" placeholder="ex.: SF-IFMA"/>
             </div>
             <div class="row end">
               <button class="btn" id="semi-save" type="button">Criar Semifinais</button>
@@ -258,31 +296,51 @@
 
         <div class="card">
           <h2>Ferramentas</h2>
-          <button id="seed-btn" class="btn ghost">Seed de Exemplo (grupos/jogadores/rodadas)</button>
-          <p class="muted">Apenas para ambiente de testes. Use uma vez.</p>
+          <button id="seed-btn" class="btn ghost">Seed de Exemplo</button>
+          <p class="muted">Preenche jogadores/rodadas de teste.</p>
         </div>
       </div>
     </section>
   </main>
 
-  <!-- LOGIN MODAL -->
+  <!-- LOGIN / SIGNUP MODAL -->
   <div id="login-modal" class="modal hidden">
     <div class="modal-content">
       <button id="close-login" class="close">&times;</button>
-      <h3>Acesso</h3>
+      <h3 id="auth-title">Acesso</h3>
+      <div class="auth-toggle">
+        <button id="btn-login-tab" class="btn small active" type="button">Entrar</button>
+        <button id="btn-signup-tab" class="btn small ghost" type="button">Criar conta</button>
+      </div>
+
       <form id="login-form" class="form">
         <div class="row">
           <label>E-mail</label>
-          <input id="login-email" type="email" required />
+          <input id="login-email" type="email" required/>
         </div>
         <div class="row">
           <label>Senha</label>
-          <input id="login-password" type="password" required />
+          <input id="login-password" type="password" required/>
         </div>
         <div class="row end">
           <button class="btn" type="submit">Entrar</button>
         </div>
       </form>
+
+      <form id="signup-form" class="form hidden">
+        <div class="row">
+          <label>E-mail</label>
+          <input id="signup-email" type="email" required/>
+        </div>
+        <div class="row">
+          <label>Senha</label>
+          <input id="signup-password" type="password" minlength="6" required/>
+        </div>
+        <div class="row end">
+          <button class="btn" type="submit">Criar conta</button>
+        </div>
+      </form>
+
       <p class="muted">Acesso admin é concedido por UID na coleção <code>admins</code>.</p>
     </div>
   </div>
