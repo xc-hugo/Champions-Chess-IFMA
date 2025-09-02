@@ -1,4 +1,4 @@
-// firebase.js — SDK v12.2.1 (CDN) sem Storage
+// firebase.js — SDK v12.2.1 (CDN) sem Storage (posts sem anexo)
 
 export const firebaseConfig = {
   apiKey: "AIzaSyCP3RH4aR-sSbB7CeZV6c6cpj9fC4HjhCw",
@@ -14,7 +14,8 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/12.2.1/firebas
 import { getAnalytics }   from "https://www.gstatic.com/firebasejs/12.2.1/firebase-analytics.js";
 import {
   getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut,
-  setPersistence, browserLocalPersistence, createUserWithEmailAndPassword
+  setPersistence, browserLocalPersistence, createUserWithEmailAndPassword,
+  GoogleAuthProvider, signInWithPopup, updateProfile
 } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-auth.js";
 import {
   getFirestore, collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
@@ -34,7 +35,15 @@ export async function loginEmailPassword(email, password) {
   return signInWithEmailAndPassword(auth, email, password);
 }
 export async function signupEmailPassword(email, password){
-  return createUserWithEmailAndPassword(auth, email, password);
+  const cred = await createUserWithEmailAndPassword(auth, email, password);
+  return cred;
+}
+export async function loginWithGoogle(){
+  const provider = new GoogleAuthProvider();
+  return signInWithPopup(auth, provider);
+}
+export async function setDisplayName(user, name){
+  try{ await updateProfile(user, { displayName: name }); }catch(e){}
 }
 export async function logout(){ return signOut(auth); }
 export function watchAuth(cb){ return onAuthStateChanged(auth, cb); }
