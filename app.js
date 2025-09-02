@@ -5,7 +5,7 @@ import {
   auth, db,
   loginWithGoogle, logout, watchAuth, isAdmin, setDisplayName,
   collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
-  onSnapshot, query, orderBy, where, serverTimestamp
+  onSnapshot, query, orderBy, where, serverTimestamp, runTransaction
 } from "./firebase.js";
 
 // ========== Helpers de UI ==========
@@ -24,6 +24,17 @@ showTab(location.hash.replace("#","") || "home");
 
 function fmtDateStr(s){ return s ? new Date(s).toLocaleString("pt-BR") : "—"; }
 function option(el, value, label){ const o=document.createElement("option"); o.value=value; o.textContent=label; el.appendChild(o); }
+
+// Slug/username helpers
+function slugifyName(name){
+  return (name || "")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")  // remove acentos
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")                      // espaços/símbolos -> "-"
+    .replace(/^-+|-+$/g, "")                          // aparar "-"
+    .slice(0, 20) || "user";
+}
+function shortUid(uid){ return (uid || "").slice(-4) || Math.floor(Math.random()*9999).toString().padStart(4,"0"); }
 
 // ========== Estado ==========
 let state = {
@@ -45,7 +56,6 @@ $("#btn-open-login")?.addEventListener("click", async ()=>{
 $("#btn-logout")?.addEventListener("click", async ()=> { await logout(); });
 
 // Perfil (Firestore: profiles/{uid})
-const colProfiles = collection(db, "profiles");
 async function loadProfile(uid){
   if(!uid){ state.profile=null; renderProfile(); return; }
   const snap = await getDoc(doc(db,"profiles",uid));
@@ -55,13 +65,73 @@ async function loadProfile(uid){
 $("#profile-form")?.addEventListener("submit", async (e)=>{
   e.preventDefault();
   if(!state.user) return alert("Entre para editar o perfil.");
-  const name = $("#profile-name").value.trim();
+
+  const display = $("#profile-name").value.trim();
+  const base = slugifyName(display);
+  const fallback = `${base}-${shortUid(state.user.uid)}`;
+
   try{
-    await setDoc(doc(db,"profiles",state.user.uid), { displayName:name, updatedAt: serverTimestamp(), email: state.user.email }, { merge:true });
-    await setDisplayName(state.user, name);
-    alert("Perfil atualizado!");
+    await runTransaction(db, async (tx)=>{
+      const profRef = doc(db, "profiles", state.user.uid);
+
+      // ler perfil atual (para soltar o handle antigo, se houver)
+      const profSnap = await tx.get(profRef);
+      const oldUsername = profSnap.exists() ? (profSnap.data().username || null) : null;
+
+      // 1) se tinha username antigo, deletar o doc /usernames/{old}
+      if(oldUsername){
+        const oldRef = doc(db, "usernames", oldUsername);
+        const oldSnap = await tx.get(oldRef);
+        if(oldSnap.exists() && oldSnap.data().uid === state.user.uid){
+          tx.delete(oldRef);
+        }
+      }
+
+      // 2) tentar reservar o handle "base"
+      let chosen = base;
+      const tryRef = doc(db, "usernames", base);
+      const trySnap = await tx.get(tryRef);
+
+      if(trySnap.exists()){
+        // já existe → usa fallback determinístico por UID
+        chosen = fallback;
+        const fbRef = doc(db, "usernames", chosen);
+        const fbSnap = await tx.get(fbRef);
+        if(fbSnap.exists()){
+          throw new Error("USERNAME_TAKEN_FALLBACK");
+        }
+        tx.set(fbRef, { uid: state.user.uid, createdAt: serverTimestamp() });
+      } else {
+        tx.set(tryRef, { uid: state.user.uid, createdAt: serverTimestamp() });
+      }
+
+      // 3) salvar perfil com displayName + username escolhido
+      tx.set(profRef, {
+        displayName: display,
+        username: chosen,
+        email: state.user.email,
+        updatedAt: serverTimestamp()
+      }, { merge: true });
+    });
+
+    // Atualiza o Auth.displayName (não afeta unicidade)
+    await setDisplayName(state.user, display);
+
+    // reload perfil para refletir username
+    const snap = await getDoc(doc(db,"profiles",state.user.uid));
+    state.profile = snap.exists() ? snap.data() : null;
     renderProfile();
-  }catch(err){ alert("Erro ao salvar perfil: "+err.message); }
+    alert("Perfil atualizado!");
+
+  }catch(err){
+    if(err.message === "USERNAME_TAKEN_FALLBACK"){
+      alert("Não foi possível reservar um username único. Tente novamente.");
+    }else if(err.code === "permission-denied"){
+      alert("Sem permissão para salvar (verifique as REGRAS do Firestore).");
+    }else{
+      alert("Erro ao salvar perfil: " + err.message);
+    }
+  }
 });
 
 // ========== Watch Auth ==========
@@ -149,7 +219,7 @@ function statsFromMatches(){
 // ========== Home (4 partidas hoje ou do próximo dia com partidas) ==========
 function renderHome(){
   const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
-  const scheduled = state.matches.filter(m => !!m.date).slice(); // já vem ordenado
+  const scheduled = state.matches.filter(m => !!m.date).slice(); // já ordenado por 'date'
   const today = new Date(); const start = new Date(today); start.setHours(0,0,0,0);
   const end   = new Date(today); end.setHours(23,59,59,999);
   const isSameDay = (a,b)=> a.getFullYear()==b.getFullYear() && a.getMonth()==b.getMonth() && a.getDate()==b.getDate();
@@ -426,7 +496,11 @@ $("#post-form")?.addEventListener("submit", async (e)=>{
   const title = $("#post-title").value.trim();
   const body  = $("#post-body").value.trim();
   try{
-    await addDoc(collection(db,"posts"), { title, body, createdAt: serverTimestamp(), author: auth.currentUser?.displayName || auth.currentUser?.email || "admin" });
+    await addDoc(collection(db,"posts"), {
+      title, body,
+      createdAt: serverTimestamp(),
+      author: state.profile?.displayName || auth.currentUser?.displayName || auth.currentUser?.email || "admin"
+    });
     $("#post-form").reset();
   }catch(err){ alert("Erro ao publicar: "+err.message); }
 });
@@ -453,14 +527,21 @@ $("#chat-form")?.addEventListener("submit", async (e)=>{
   const text = $("#chat-text").value.trim();
   if(!text) return;
   const expireAt = new Date(Date.now() + 24*60*60*1000);
-  await addDoc(collection(db,"chat"), { text, author: auth.currentUser.displayName || auth.currentUser.email, createdAt: serverTimestamp(), expireAt });
+  await addDoc(collection(db,"chat"), {
+    text,
+    author: state.profile?.displayName || auth.currentUser.displayName || auth.currentUser.email,
+    username: state.profile?.username || null,
+    createdAt: serverTimestamp(),
+    expireAt
+  });
   $("#chat-text").value = "";
 });
 function renderChat(){
   const html = state.chat.map(m=>{
     const when = m.createdAt?.toDate ? m.createdAt.toDate().toLocaleString("pt-BR") : "";
+    const who = m.username ? `${m.author} (@${m.username})` : m.author;
     return `<div class="chat-item">
-      <div class="meta">${m.author} · ${when}</div>
+      <div class="meta">${who} · ${when}</div>
       <div>${(m.text||"").replace(/\n/g,"<br>")}</div>
     </div>`;
   }).join("");
@@ -473,6 +554,9 @@ function renderProfile(){
   const u = state.user;
   $("#profile-email").value = u?.email || "";
   $("#profile-name").value = (state.profile?.displayName) || (u?.displayName) || "";
+  const userTag = state.profile?.username ? `@${state.profile.username}` : "—";
+  const el = $("#profile-username");
+  if(el) el.textContent = userTag;
 }
 
 // ========== Admin: Semifinais ==========
@@ -572,7 +656,7 @@ $("#seed-btn")?.addEventListener("click", async ()=>{
   await addDoc(collection(db,"posts"), { title:"Regras", body:"Pontuação 3-1-0 (fase de grupos). Top-2 avança (G2).", createdAt: serverTimestamp(), author: auth.currentUser?.displayName || auth.currentUser?.email || "admin" });
 
   const expireAt = new Date(Date.now() + 24*60*60*1000);
-  await addDoc(collection(db,"chat"), { text:"Chat aberto! Respeito e esportividade. ♟️", author: auth.currentUser?.displayName || auth.currentUser?.email || "admin", createdAt: serverTimestamp(), expireAt });
+  await addDoc(collection(db,"chat"), { text:"Chat aberto! Respeito e esportividade. ♟️", author: auth.currentUser?.displayName || auth.currentUser?.email || "admin", username: state.profile?.username || null, createdAt: serverTimestamp(), expireAt });
 
   alert("Seed concluído!");
 });
