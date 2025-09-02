@@ -70,23 +70,36 @@ async function loadProfile(uid){
   renderProfile();
 }
 
-// Admin realtime toggle
+// ===== Admin realtime toggle + timer do adiamento =====
 let unsubscribeAdminWatch = null;
+let postponeTimer = null;
+
+function scheduleAutoPostponeTimer(enabled){
+  if(postponeTimer){ clearInterval(postponeTimer); postponeTimer=null; }
+  if(enabled){
+    // roda a cada 5 minutos para cobrir mudança de dia sem alteração no Firestore
+    postponeTimer = setInterval(autoPostponeOverdueMatches, 5*60*1000);
+    // e dispara uma vez agora
+    autoPostponeOverdueMatches();
+  }
+}
+
 function setAdminFlag(flag){
   const changed = state.admin !== flag;
   state.admin = flag;
 
-  // toggles de UI imediatos
   $("#admin-badge")?.classList.toggle("hidden", !flag);
   $("#tab-admin")?.classList.toggle("hidden", !flag);
   $$(".admin-only").forEach(el => el.classList.toggle("hidden", !flag));
 
-  // se mudou, re-renderiza tudo que depende de admin (botões/ações)
+  // agenda/cancela verificação periódica
+  scheduleAutoPostponeTimer(flag);
+
   if (changed) {
     renderPosts();
     renderChat();
     renderMatches();
-    renderHome();            // inclui botões de apagar no card de Home
+    renderHome();
     renderAdminSemisList();
   }
 }
@@ -162,16 +175,15 @@ watchAuth(async (user)=>{
   $("#user-chip")?.classList.toggle("hidden", !user);
   if($("#user-email")) $("#user-email").textContent = user ? (user.displayName || user.email) : "";
 
-  // libera chat input só logado
   $("#chat-form")?.classList.toggle("hidden", !user);
   $("#chat-login-hint")?.classList.toggle("hidden", !!user);
 
   await loadProfile(user?.uid || null);
 
-  // (1) para qualquer usuário, começa como não-admin
+  // começa como não-admin
   setAdminFlag(false);
 
-  // (2) escuta em TEMPO REAL o doc admins/{uid}
+  // escuta em TEMPO REAL o doc admins/{uid}
   if (unsubscribeAdminWatch) unsubscribeAdminWatch();
   if (user) {
     const adminRef = doc(db, "admins", user.uid);
@@ -181,12 +193,8 @@ watchAuth(async (user)=>{
     });
   }
 
-  // re-render inicial (caso onSnapshot já tenha carregado dados antes do admin toggle)
-  renderPosts();
-  renderChat();
-  renderMatches();
-  renderHome();
-  renderAdminSemisList();
+  // re-render inicial
+  renderPosts(); renderChat(); renderMatches(); renderHome(); renderAdminSemisList();
 });
 
 // ========== Firestore listeners ==========
@@ -211,6 +219,8 @@ onSnapshot(query(colMatches, orderBy("date")), snap=>{
   renderPlayerDetails();
   renderHome();
   renderAdminSemisList();
+  // checa adiantamento automaticamente quando chegam/atualizam partidas
+  autoPostponeOverdueMatches();
 });
 onSnapshot(query(colPosts, orderBy("createdAt","desc")), snap=>{
   state.posts = snap.docs.map(d => ({ id:d.id, ...d.data() }));
@@ -454,6 +464,50 @@ function renderMatches(){
 }
 $("#filter-stage")?.addEventListener("change", renderMatches);
 
+// ===== Adiamento automático (24h após a data) =====
+async function autoPostponeOverdueMatches(){
+  if(!state.admin) return; // só admin executa as mudanças
+  const now = Date.now();
+  const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
+
+  const tasks = [];
+  for(const m of state.matches){
+    if(!m?.date) continue;
+    if(m?.result) continue; // já tem resultado
+    const due = new Date(m.date).getTime() + 24*60*60*1000; // +24h
+    if(now >= due){
+      tasks.push(runTransaction(db, async (tx)=>{
+        const ref = doc(db,"matches", m.id);
+        const snap = await tx.get(ref);
+        if(!snap.exists()) return;
+        const cur = snap.data();
+        if(cur.result) return;                  // já decidiram
+        if(cur.postponedNotice) return;         // já tratamos antes
+
+        // marca adiado e cria post (uma vez)
+        tx.update(ref, {
+          result: "postponed",
+          postponedAt: serverTimestamp(),
+          postponedNotice: true
+        });
+
+        const postsRef = doc(collection(db,"posts")); // id auto
+        const aName = mapP[cur.aId] || "?";
+        const bName = mapP[cur.bId] || "?";
+        const title = `Partida adiada: ${aName} × ${bName}`;
+        const body  = `A partida ${cur.code ? `(${cur.code}) ` : ""}${aName} × ${bName}, marcada para ${fmtDateStr(cur.date)}, foi automaticamente marcada como **ADIADA** por falta de atualização do resultado após 24 horas. Favor remarcar com a organização.`;
+        tx.set(postsRef, {
+          title, body,
+          createdAt: serverTimestamp(),
+          author: "Sistema",
+          authorEmail: ""
+        });
+      }));
+    }
+  }
+  if(tasks.length) await Promise.allSettled(tasks);
+}
+
 // ========== Admin: Players ==========
 function fillPlayersSelects(){
   const selects = ["match-a","match-b","semi1-a","semi1-b","semi2-a","semi2-b"];
@@ -502,6 +556,12 @@ async function loadMatchToForm(id){
   $("#match-code").value = m.code || "";
   $("#match-result").value = m.result || "";
   showTab("partidas");
+
+  // 🔽 rola suavemente até o gerenciador e foca o primeiro campo
+  setTimeout(()=>{
+    $("#admin-matches")?.scrollIntoView({ behavior:"smooth", block:"start" });
+    $("#match-a")?.focus();
+  }, 50);
 }
 $("#match-reset")?.addEventListener("click", ()=>{ $("#match-form").reset(); $("#match-id").value=""; $("#match-date").dataset.dirty="false"; });
 $("#match-delete")?.addEventListener("click", async ()=>{
