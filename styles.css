@@ -159,3 +159,35 @@ h1{font-size:20px;margin:0}.subtitle{margin:2px 0 0;color:var(--muted);font-size
 /* Mais respiro entre caixas nas abas pedidas */
 #partidas > .card, #posts > .card, #players > .card, #chat > .card { margin-bottom: 22px; }
 #partidas > .card:last-child, #posts > .card:last-child, #players > .card:last-child, #chat > .card:last-child { margin-bottom: 0; }
+
+/* Mais distância entre a grade e a caixa de detalhes + padding maior */
+#players .grid-2 { margin-bottom: 36px; }
+#player-details {
+  margin-top: 10px;
+  padding: 18px 20px;              /* padding maior */
+  border: 1px solid #1f2630;
+  border-radius: 12px;
+  background: #10161e;
+}
+
+/* Select “Selecionar Jogador” com opções legíveis (texto preto) */
+#player-select {
+  appearance: none;
+  border-radius: 12px;
+  padding: 12px 14px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;             /* fundo claro */
+  color: #000000;                  /* texto preto */
+  font-weight: 700;
+  transition: box-shadow .15s, border-color .15s;
+}
+#player-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(43,182,115,.25);
+}
+/* Garante as opções pretas no menu do select */
+#player-select option {
+  color: #000000;
+  background: #ffffff;
+}
