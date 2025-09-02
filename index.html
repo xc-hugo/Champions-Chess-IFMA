@@ -8,9 +8,10 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css"/>
   <style>
-    /* Pequenos ajustes para garantir funcionamento imediato */
+    /* Garantir que não haja “vão” acima da navbar */
     html, body { margin: 0; }
     .tabs.topbar { margin: 0; }
+
     /* Apostas: mais espaço entre cartões */
     #apostas .grid-2 { gap: 24px; }
     #apostas .card { margin-bottom: 18px; }
@@ -23,7 +24,7 @@
       <img src="logo.png" alt="Champions Chess IFMA" class="logo" style="width:36px;height:36px;border-radius:50%;object-fit:cover">
       <strong>Champions Chess IFMA</strong>
     </div>
-  
+
     <div class="nav-center" style="display:flex;gap:8px;flex:1;justify-content:center">
       <button class="tab active" data-tab="home">Home</button>
       <button class="tab" data-tab="regulamento">Regulamento</button>
@@ -33,10 +34,10 @@
       <button class="tab" data-tab="posts">Post</button>
       <button class="tab" data-tab="apostas">Apostas</button>
       <button class="tab" data-tab="chat">Chat</button>
-      <button class="tab" data-tab="perfil">Perfil</button>
+      <!-- REMOVIDO: botão Perfil (o chip do usuário abre o perfil) -->
       <button id="tab-admin" class="tab admin-only hidden" data-tab="admin">Admin</button>
     </div>
-  
+
     <div class="nav-right" style="display:flex;align-items:center;gap:8px">
       <div id="user-chip" class="chip hidden" title="Abrir perfil" style="cursor:pointer">
         <span id="user-email"></span>
@@ -125,11 +126,11 @@
           <h2>Partidas</h2>
           <div class="filters">
             <select id="filter-stage">
+              <option value="groups">Fase de grupos</option>
+              <option value="groupA">Grupo A</option>
+              <option value="groupB">Grupo B</option>
+              <option value="semifinal">Semifinal</option>
               <option value="all">Todas</option>
-              <option value="groups">Fase de Grupos</option>
-              <option value="semifinal">Semifinais</option>
-              <option value="final">Final</option>
-              <option value="third">3º Lugar</option>
             </select>
           </div>
         </div>
@@ -432,4 +433,3 @@
   <script type="module" src="app.js"></script>
 </body>
 </html>
-
