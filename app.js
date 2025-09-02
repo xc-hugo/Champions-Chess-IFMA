@@ -1,16 +1,17 @@
-// app.js — Champions Chess IFMA (Firebase v12.2.1)
-// Requer firebase.js atualizado (com Google, setDisplayName e Firestore)
+// app.js — Champions Chess IFMA (Google login only, Firestore)
+// Requer: index.html + styles.css + firebase.js + assets (logo.png, ChampionsChessIFMA.pdf)
 
 import {
   auth, db,
-  loginEmailPassword, signupEmailPassword, loginWithGoogle, logout, watchAuth, isAdmin, setDisplayName,
+  loginWithGoogle, logout, watchAuth, isAdmin, setDisplayName,
   collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
   onSnapshot, query, orderBy, where, serverTimestamp
 } from "./firebase.js";
 
-// ======= UI Helpers =======
+// ========== Helpers de UI ==========
 const $ = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
+
 function showTab(id){
   if(!id) id = "home";
   $$(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === id));
@@ -24,7 +25,7 @@ showTab(location.hash.replace("#","") || "home");
 function fmtDateStr(s){ return s ? new Date(s).toLocaleString("pt-BR") : "—"; }
 function option(el, value, label){ const o=document.createElement("option"); o.value=value; o.textContent=label; el.appendChild(o); }
 
-// ======= State =======
+// ========== Estado ==========
 let state = {
   user: null,
   admin: false,
@@ -35,54 +36,15 @@ let state = {
   chat: []
 };
 
-// ======= Auth UI =======
-const loginModal = $("#login-modal");
-$("#btn-open-login")?.addEventListener("click", ()=> loginModal.classList.remove("hidden"));
-$("#close-login")?.addEventListener("click", ()=> loginModal.classList.add("hidden"));
-
-// Alternar Entrar/Criar conta
-$("#btn-login-tab")?.addEventListener("click", ()=>{
-  $("#btn-login-tab").classList.add("active"); $("#btn-signup-tab").classList.remove("active");
-  $("#login-form").classList.remove("hidden"); $("#signup-form").classList.add("hidden");
-  $("#auth-title").textContent = "Acesso";
+// ========== Auth UI (Google only) ==========
+// Botão Entrar → Google
+$("#btn-open-login")?.addEventListener("click", async ()=>{
+  try { await loginWithGoogle(); }
+  catch(err){ alert("Erro ao entrar com Google: " + err.message); }
 });
-$("#btn-signup-tab")?.addEventListener("click", ()=>{
-  $("#btn-signup-tab").classList.add("active"); $("#btn-login-tab").classList.remove("active");
-  $("#signup-form").classList.remove("hidden"); $("#login-form").classList.add("hidden");
-  $("#auth-title").textContent = "Criar conta";
-});
-
-// Email/senha
-$("#login-form")?.addEventListener("submit", async (e)=>{
-  e.preventDefault();
-  const email = $("#login-email").value.trim();
-  const pass = $("#login-password").value.trim();
-  try{
-    await loginEmailPassword(email, pass);
-    loginModal.classList.add("hidden");
-  }catch(err){ alert("Erro ao entrar: " + err.message); }
-});
-$("#signup-form")?.addEventListener("submit", async (e)=>{
-  e.preventDefault();
-  const email = $("#signup-email").value.trim();
-  const pass = $("#signup-password").value.trim();
-  try{
-    await signupEmailPassword(email, pass);
-    alert("Conta criada! Você já está logado.");
-    loginModal.classList.add("hidden");
-  }catch(err){ alert("Erro ao cadastrar: " + err.message); }
-});
-// Google
-$("#btn-google")?.addEventListener("click", async ()=>{
-  try{
-    await loginWithGoogle();
-    loginModal.classList.add("hidden");
-  }catch(err){ alert("Erro no Google: " + err.message); }
-});
-
 $("#btn-logout")?.addEventListener("click", async ()=> { await logout(); });
 
-// ======= Perfil =======
+// Perfil (Firestore: profiles/{uid})
 const colProfiles = collection(db, "profiles");
 async function loadProfile(uid){
   if(!uid){ state.profile=null; renderProfile(); return; }
@@ -92,36 +54,40 @@ async function loadProfile(uid){
 }
 $("#profile-form")?.addEventListener("submit", async (e)=>{
   e.preventDefault();
-  if(!state.user) return alert("Entre para editar.");
+  if(!state.user) return alert("Entre para editar o perfil.");
   const name = $("#profile-name").value.trim();
   try{
-    await setDoc(doc(db,"profiles",state.user.uid), { displayName: name, updatedAt: serverTimestamp(), email: state.user.email }, { merge: true });
+    await setDoc(doc(db,"profiles",state.user.uid), { displayName:name, updatedAt: serverTimestamp(), email: state.user.email }, { merge:true });
     await setDisplayName(state.user, name);
-    alert("Perfil salvo!");
-  }catch(err){ alert("Erro ao salvar: "+err.message); }
+    alert("Perfil atualizado!");
+    renderProfile();
+  }catch(err){ alert("Erro ao salvar perfil: "+err.message); }
 });
 
-// ======= Watch Auth =======
+// ========== Watch Auth ==========
 watchAuth(async (user)=>{
   state.user = user;
+
+  // header
   $("#btn-open-login")?.classList.toggle("hidden", !!user);
   $("#btn-logout")?.classList.toggle("hidden", !user);
   $("#user-chip")?.classList.toggle("hidden", !user);
   if($("#user-email")) $("#user-email").textContent = user ? (user.displayName || user.email) : "";
 
+  // admin toggles
   state.admin = user ? await isAdmin(user.uid) : false;
   $("#admin-badge")?.classList.toggle("hidden", !state.admin);
   $("#tab-admin")?.classList.toggle("hidden", !state.admin);
   $$(".admin-only").forEach(el => el.classList.toggle("hidden", !state.admin));
 
-  // Chat: input só se logado
+  // chat input só logado
   $("#chat-form")?.classList.toggle("hidden", !user);
   $("#chat-login-hint")?.classList.toggle("hidden", !!user);
 
   await loadProfile(user?.uid || null);
 });
 
-// ======= Firestore listeners =======
+// ========== Firestore listeners ==========
 const colPlayers = collection(db, "players");
 const colMatches = collection(db, "matches");
 const colPosts   = collection(db, "posts");
@@ -157,7 +123,7 @@ onSnapshot(query(colChat, orderBy("createdAt","desc")), snap=>{
   renderChat();
 });
 
-// ======= Estatísticas (só fase de grupos conta pontos) =======
+// ========== Estatísticas (só fase de grupos conta 3/1/0) ==========
 function statsFromMatches(){
   const stats = {};
   for(const p of state.players){
@@ -180,20 +146,17 @@ function statsFromMatches(){
   return stats;
 }
 
-// ======= Home =======
-// mostrar 4 primeiras partidas de HOJE; se não tiver, pegar do PRÓXIMO DIA com partidas
+// ========== Home (4 partidas hoje ou do próximo dia com partidas) ==========
 function renderHome(){
   const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
-  const scheduled = state.matches.filter(m => !!m.date).slice(); // já ordenado por 'date'
+  const scheduled = state.matches.filter(m => !!m.date).slice(); // já vem ordenado
   const today = new Date(); const start = new Date(today); start.setHours(0,0,0,0);
   const end   = new Date(today); end.setHours(23,59,59,999);
-
   const isSameDay = (a,b)=> a.getFullYear()==b.getFullYear() && a.getMonth()==b.getMonth() && a.getDate()==b.getDate();
 
-  let todays = scheduled.filter(m=>{ const d = new Date(m.date); return d>=start && d<=end; });
-  let pick = todays;
+  let pick = scheduled.filter(m=>{ const d = new Date(m.date); return d>=start && d<=end; });
   if(pick.length===0){
-    // pega o menor dia futuro com partidas
+    // encontra o próximo dia futuro com partidas
     let nextDay = null;
     for(const m of scheduled){
       const d = new Date(m.date);
@@ -214,7 +177,6 @@ function renderHome(){
       <td>${m.code || "-"}</td>
     </tr>
   `).join("");
-
   const table = `
     <table>
       <thead><tr><th>Etapa</th><th>Grupo</th><th>Partida</th><th>Data</th><th>Código</th></tr></thead>
@@ -226,7 +188,7 @@ function renderHome(){
   if($("#home-posts")) $("#home-posts").innerHTML = posts || `<p class="muted">Sem comunicados.</p>`;
 }
 
-// ======= Players =======
+// ========== Players (separado por Grupo + busca + seleção) ==========
 function renderPlayers(){
   const stats = statsFromMatches();
   const byGroup = { A:[], B:[] };
@@ -246,7 +208,6 @@ function renderPlayers(){
   if($("#players-cards-A")) $("#players-cards-A").innerHTML = byGroup.A.join("") || `<p class="muted">Sem jogadores.</p>`;
   if($("#players-cards-B")) $("#players-cards-B").innerHTML = byGroup.B.join("") || `<p class="muted">Sem jogadores.</p>`;
 
-  // clique no card seleciona jogador
   $$("#players-cards-A .player-card, #players-cards-B .player-card").forEach(c=>{
     c.onclick = ()=>{
       $$(".player-card").forEach(x=>x.classList.remove("selected"));
@@ -263,7 +224,6 @@ $("#player-search-btn")?.addEventListener("click", ()=>{
   const found = state.players.find(p => p.name.toLowerCase().includes(q));
   if(found){
     const sel = $("#player-select"); if(sel){ sel.value = found.id; renderPlayerDetails(); }
-    // destaca card
     $$(".player-card").forEach(x=>x.classList.toggle("selected", x.dataset.id===found.id));
   }else{
     alert("Jogador não encontrado.");
@@ -293,7 +253,7 @@ function renderPlayerDetails(){
   `;
 }
 
-// ======= Tabela de Pontos =======
+// ========== Tabela de Pontos ==========
 function renderTables(){
   const stats = statsFromMatches();
   const groups = {A:[], B:[]};
@@ -325,7 +285,7 @@ function renderTables(){
   });
 }
 
-// ======= Partidas (organizado por etapa/grupo) =======
+// ========== Partidas (organizado) ==========
 function renderMatches(){
   const stageF = $("#filter-stage")?.value || "all";
   const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
@@ -333,7 +293,6 @@ function renderMatches(){
   let arr = state.matches.slice();
   if(stageF !== "all") arr = arr.filter(m => m.stage === stageF);
 
-  // grupos A/B
   const gA = arr.filter(m => m.stage==="groups" && m.group==="A");
   const gB = arr.filter(m => m.stage==="groups" && m.group==="B");
   const ko = arr.filter(m => m.stage!=="groups");
@@ -376,7 +335,7 @@ function renderMatches(){
 }
 $("#filter-stage")?.addEventListener("change", renderMatches);
 
-// ======= Admin: Players =======
+// ========== Admin: Players CRUD ==========
 function fillPlayersSelects(){
   const selects = ["match-a","match-b","semi1-a","semi1-b","semi2-a","semi2-b"];
   selects.forEach(id=>{
@@ -397,8 +356,7 @@ $("#player-form")?.addEventListener("submit", async (e)=>{
   try{
     if(id) await updateDoc(doc(db,"players",id), data);
     else await addDoc(collection(db,"players"), data);
-    $("#player-form").reset();
-    $("#player-id").value = "";
+    $("#player-form").reset(); $("#player-id").value = "";
   }catch(err){ alert("Erro: "+err.message); }
 });
 $("#player-reset")?.addEventListener("click", ()=>{ $("#player-form").reset(); $("#player-id").value = ""; });
@@ -409,7 +367,7 @@ $("#player-delete")?.addEventListener("click", async ()=>{
   $("#player-form").reset(); $("#player-id").value = "";
 });
 
-// ======= Admin: Matches =======
+// ========== Admin: Matches CRUD ==========
 async function loadMatchToForm(id){
   const m = state.matches.find(x=>x.id===id);
   if(!m) return;
@@ -418,7 +376,7 @@ async function loadMatchToForm(id){
   $("#match-b").value = m.bId || "";
   $("#match-stage").value = m.stage || "groups";
   $("#match-group").value = m.group || "";
-  // Corrigido: guarda original e só altera a data se mudar o campo
+  // ✅ Data só muda se usuário editar
   $("#match-date").value = m.date || "";
   $("#match-date-orig").value = m.date || "";
   $("#match-date").dataset.dirty = "false";
@@ -449,7 +407,7 @@ $("#match-form")?.addEventListener("submit", async (e)=>{
   const dateDirty = $("#match-date").dataset.dirty === "true";
   const dateVal = $("#match-date").value || null;
   if(!isEdit){
-    payload.date = dateVal;           // criação pode gravar data
+    payload.date = dateVal;           // criação grava se houver
   }else if(dateDirty){
     payload.date = dateVal;           // edição só muda se editou
   }
@@ -458,19 +416,17 @@ $("#match-form")?.addEventListener("submit", async (e)=>{
     const id = $("#match-id").value;
     if(id) await updateDoc(doc(db,"matches",id), payload);
     else await addDoc(collection(db,"matches"), payload);
-    $("#match-form").reset();
-    $("#match-id").value="";
-    $("#match-date").dataset.dirty="false";
+    $("#match-form").reset(); $("#match-id").value=""; $("#match-date").dataset.dirty="false";
   }catch(err){ alert("Erro: "+err.message); }
 });
 
-// ======= Posts (sem anexo) =======
+// ========== Posts (sem anexo) ==========
 $("#post-form")?.addEventListener("submit", async (e)=>{
   e.preventDefault();
   const title = $("#post-title").value.trim();
   const body  = $("#post-body").value.trim();
   try{
-    await addDoc(collection(db,"posts"), { title, body, createdAt: serverTimestamp(), author: auth.currentUser?.email || "admin" });
+    await addDoc(collection(db,"posts"), { title, body, createdAt: serverTimestamp(), author: auth.currentUser?.displayName || auth.currentUser?.email || "admin" });
     $("#post-form").reset();
   }catch(err){ alert("Erro ao publicar: "+err.message); }
 });
@@ -490,7 +446,7 @@ function renderPosts(){
   if($("#posts-list")) $("#posts-list").innerHTML = html || `<p class="muted">Sem comunicados.</p>`;
 }
 
-// ======= Chat (mensagens expiram após 24h) =======
+// ========== Chat (expira 24h) ==========
 $("#chat-form")?.addEventListener("submit", async (e)=>{
   e.preventDefault();
   if(!auth.currentUser){ alert("Entre para enviar mensagens."); return; }
@@ -511,7 +467,7 @@ function renderChat(){
   if($("#chat-list")) $("#chat-list").innerHTML = html || `<p class="muted">Sem mensagens nas últimas 24h.</p>`;
 }
 
-// ======= Perfil – render =======
+// ========== Perfil — render ==========
 function renderProfile(){
   if(!$("#profile-form")) return;
   const u = state.user;
@@ -519,23 +475,18 @@ function renderProfile(){
   $("#profile-name").value = (state.profile?.displayName) || (u?.displayName) || "";
 }
 
-// ======= Admin: Semifinais =======
+// ========== Admin: Semifinais ==========
 $("#semi-autofill")?.addEventListener("click", ()=>{
   const stats = statsFromMatches();
   const groups = {A:[], B:[]};
   for(const id in stats){ const s=stats[id]; (groups[s.group]||[]).push(s); }
   const sort = a=>a.sort((x,y)=> y.points-x.points || y.wins-x.wins || x.name.localeCompare(y.name));
   sort(groups.A); sort(groups.B);
-  const topA = groups.A.slice(0,2), topB = groups.B.slice(0,2);
-  const idByName = Object.fromEntries(state.players.map(p=>[p.name,p.id]));
-  // preenche selects se existirem
-  const a1 = state.players.find(p=>p.id===topA[0]?.id); const a2 = state.players.find(p=>p.id===topA[1]?.id);
-  const b1 = state.players.find(p=>p.id===topB[0]?.id); const b2 = state.players.find(p=>p.id===topB[1]?.id);
+  const a1 = groups.A[0], a2 = groups.A[1], b1 = groups.B[0], b2 = groups.B[1];
   if(a1 && b2){ $("#semi1-a").value = a1.id; $("#semi1-b").value = b2.id; }
   if(b1 && a2){ $("#semi2-a").value = b1.id; $("#semi2-b").value = a2.id; }
-  alert("Semifinais preenchidas pelos Top 2 de cada grupo (não cria ainda; clique em Criar Semifinais).");
+  alert("Semifinais preenchidas pelos Top 2 (não criou ainda; clique em Criar Semifinais).");
 });
-
 $("#semi-save")?.addEventListener("click", async ()=>{
   const pairs = [
     { a: $("#semi1-a").value, b: $("#semi1-b").value, code: $("#semi-code").value ? $("#semi-code").value+"-1" : "SF-1" },
@@ -547,7 +498,6 @@ $("#semi-save")?.addEventListener("click", async ()=>{
   }
   alert("Semifinais criadas. Ajuste datas/resultados em Partidas.");
 });
-
 function renderAdminSemisList(){
   const list = state.matches.filter(m=> m.stage==="semifinal");
   const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
@@ -567,12 +517,12 @@ function renderAdminSemisList(){
   if($("#semi-list")) $("#semi-list").innerHTML = html;
 }
 
-// ======= Seed Example (admin only) =======
+// ========== Seed Example (admin only) ==========
 $("#seed-btn")?.addEventListener("click", async ()=>{
   if(!state.admin){ alert("Apenas admins."); return; }
   if(!confirm("Adicionar dados de exemplo?")) return;
 
-  // Jogadores
+  // Players
   const players = [
     ["Hugo","A"],["Eudison","A"],["Rhuan","A"],["Luís Felipe","A"],["Yuri","A"],
     ["Kelvin","B"],["Marcos","B"],["Davi","B"],["Alyson","B"],["Wemerson","B"]
@@ -584,7 +534,7 @@ $("#seed-btn")?.addEventListener("click", async ()=>{
     else { nameToId[name] = q.docs[0].id; }
   }
 
-  // Partidas da Fase de Grupos — usa string local 'YYYY-MM-DDTHH:mm'
+  // Matches da Fase de Grupos — string 'YYYY-MM-DDTHH:mm' (ordem estável)
   const now = new Date();
   const base = (h)=>{ const d=new Date(now.getTime()+h*3600000); return d.toISOString().slice(0,16); };
 
@@ -617,11 +567,10 @@ $("#seed-btn")?.addEventListener("click", async ()=>{
     });
   }
 
-  // Posts de exemplo
-  await addDoc(collection(db,"posts"), { title:"Bem-vindos!", body:"Início do campeonato. Boa sorte a todos!", createdAt: serverTimestamp(), author: auth.currentUser?.email || "admin" });
-  await addDoc(collection(db,"posts"), { title:"Regras", body:"Pontuação 3-1-0 na fase de grupos. Top-2 avança (G2).", createdAt: serverTimestamp(), author: auth.currentUser?.email || "admin" });
+  // Posts e chat
+  await addDoc(collection(db,"posts"), { title:"Bem-vindos!", body:"Início do campeonato. Boa sorte a todos!", createdAt: serverTimestamp(), author: auth.currentUser?.displayName || auth.currentUser?.email || "admin" });
+  await addDoc(collection(db,"posts"), { title:"Regras", body:"Pontuação 3-1-0 (fase de grupos). Top-2 avança (G2).", createdAt: serverTimestamp(), author: auth.currentUser?.displayName || auth.currentUser?.email || "admin" });
 
-  // Mensagem no chat
   const expireAt = new Date(Date.now() + 24*60*60*1000);
   await addDoc(collection(db,"chat"), { text:"Chat aberto! Respeito e esportividade. ♟️", author: auth.currentUser?.displayName || auth.currentUser?.email || "admin", createdAt: serverTimestamp(), expireAt });
 
