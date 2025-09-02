@@ -53,13 +53,12 @@ h1{font-size:20px;margin:0}.subtitle{margin:2px 0 0;color:var(--muted);font-size
 .player-meta{line-height:1.2}.player-meta .name{font-weight:800}.player-meta .muted{font-size:12px}
 
 /* Posts */
-.posts .post{display:flex;gap:12px;padding:16px 0;border-bottom:1px solid #202a39}
+.posts .post{display:flex;gap:12px;padding:22px 0;border-bottom:1px solid #202a39}
 .home-posts{margin-top:18px}
-.home-posts .posts .post{padding:18px 0}
 
 /* Chat */
-.chat-list{display:flex;flex-direction:column;gap:10px;max-height:380px;overflow:auto;padding:8px;background:#0e141b;border:1px solid #1f2630;border-radius:12px}
-.chat-item{background:#101720;border:1px solid #1f2630;border-radius:10px;padding:8px 10px}
+.chat-list{display:flex;flex-direction:column;gap:12px;max-height:380px;overflow:auto;padding:12px;background:#0e141b;border:1px solid #1f2630;border-radius:12px}
+.chat-item{background:#101720;border:1px solid #1f2630;border-radius:10px;padding:10px 12px}
 .chat-item .meta{color:#8ea0b3;font-size:12px}
 
 /* Forms */
@@ -73,14 +72,17 @@ h1{font-size:20px;margin:0}.subtitle{margin:2px 0 0;color:var(--muted);font-size
 .btn{background:var(--accent);color:#062010;border:none;padding:10px 14px;border-radius:10px;cursor:pointer;font-weight:700}
 .btn.ghost{background:#0e141b;color:#cde6d7;border:1px solid #1f2630}
 .btn.danger{background:var(--danger);color:#fff}
-.btn.small{padding:6px 10px;font-weight:700;border-radius:8px}
-.btn:disabled{opacity:.6;cursor:not-allowed}
+.btn.small{ padding: 6px 10px; border-radius: 8px; font-weight: 700; }
+.btn:disabled{opacity:.6;cursor:none}
 
+/* PDF */
 .pdf-wrap{border-radius:12px;overflow:hidden;border:1px solid #1f2630;background:#0e141b}
 .cta-row{display:flex;gap:10px;margin-top:10px}
 
+/* Footer */
 .site-footer{padding:20px;text-align:center;color:#8ea0b3}
 
+/* Modal (se usar) */
 .modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center}
 .modal.hidden{display:none}
 .modal-content{position:relative;width:min(520px,92%);background:var(--card);border:1px solid #1f2630;border-radius:16px;padding:20px;box-shadow:var(--shadow)}
@@ -90,3 +92,49 @@ h1{font-size:20px;margin:0}.subtitle{margin:2px 0 0;color:var(--muted);font-size
 .badge{margin-left:8px;background:#61481c;color:#ffd8a8;padding:3px 7px;border-radius:999px;font-weight:800;font-size:11px}
 .hidden{display:none !important}
 .auth-toggle{display:flex;gap:8px;margin-bottom:8px}
+
+/* ==== AJUSTES PEDIDOS ==== */
+/* 1) Aumentar padding/espaçamento entre caixas nas abas */
+#partidas .card, #posts .card, #players .card, #chat .card { margin-bottom: 22px; }
+#partidas .card:last-child, #posts .card:last-child, #players .card:last-child, #chat .card:last-child { margin-bottom: 0; }
+
+/* 2) Campo de pesquisa (Players) aprimorado */
+#player-search{
+  border-radius: 999px;
+  padding: 12px 14px;
+  border: 1px solid #274057;
+  background: #0c1420;
+  color: var(--text);
+  transition: box-shadow .15s, border-color .15s;
+}
+#player-search::placeholder{ color: #6e8197; }
+#player-search:focus{
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(43,182,115,.25);
+}
+
+/* 3) Botão de buscar aprimorado */
+#player-search-btn{
+  border-radius: 999px;
+  padding: 12px 16px;
+  font-weight: 800;
+}
+#player-search-btn::before{ content: "🔎 "; }
+
+/* 4) Select “Selecionar Jogador” mais bonito */
+#player-select{
+  appearance: none;
+  border-radius: 12px;
+  padding: 12px 14px;
+  border: 1px solid #274057;
+  background: linear-gradient(180deg,#0e141b,#0b121a);
+  color: var(--text);
+  font-weight: 700;
+  transition: box-shadow .15s, border-color .15s;
+}
+#player-select:focus{
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(43,182,115,.25);
+}
