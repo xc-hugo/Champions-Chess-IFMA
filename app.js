@@ -15,12 +15,21 @@ function confirmAction(msg){
   return new Promise(res=> res(window.confirm(msg)));
 }
 
-// Trata strings "YYYY-MM-DDTHH:mm" como horário LOCAL (sem fuso)
+// Aceita "YYYY-MM-DDTHH:mm", "YYYY-MM-DDTHH:mm:ss", com/sem Z/offset.
+// Quando sem timezone, trata como LOCAL. Com Z/offset, usa Date(str).
 function parseLocalDate(str){
   if(!str) return null;
-  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(str);
-  if(!m) return null;
-  return new Date(+m[1], +m[2]-1, +m[3], +m[4], +m[5], 0, 0); // local
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?([Zz]|[+\-]\d{2}:\d{2})?$/.exec(str);
+  if(m){
+    if(m[7]){ // tem timezone/offset → usar Date nativa
+      const d = new Date(str);
+      return isNaN(d) ? null : d;
+    } else {  // sem timezone → interpretar como local
+      return new Date(+m[1], +m[2]-1, +m[3], +m[4], +m[5], +(m[6]||0), 0);
+    }
+  }
+  const d = new Date(str);
+  return isNaN(d) ? null : d;
 }
 function fmtLocalDateStr(str){
   const d = parseLocalDate(str);
@@ -51,8 +60,12 @@ function slugifyName(name){
 }
 function shortUid(uid){ return (uid || "").slice(-4) || Math.floor(Math.random()*9999).toString().padStart(4,"0"); }
 
-/* ===== Navbar fixa: compensação e scroll pro topo ===== */
+/* ===== Navbar fixa: compensação, sem “corte” e sem espaço acima ===== */
 function applyTopbarOffset(){
+  // elimina espaço estranho acima da navbar (margin padrão do body)
+  if (getComputedStyle(document.body).margin !== "0px") {
+    document.body.style.margin = "0";
+  }
   const header = document.querySelector(".topbar");
   const h = header ? header.offsetHeight : 0;
   document.documentElement.style.setProperty("--topbar-h", `${h}px`);
@@ -64,8 +77,7 @@ function showTab(id){
   $$(".view").forEach(v => v.classList.toggle("visible", v.id === id));
   if(location.hash.replace("#","") !== id) location.hash = id;
   applyTopbarOffset();
-  // sobe pro topo sem "parar antes"
-  window.scrollTo({ top: 0, behavior: "auto" });
+  window.scrollTo({ top: 0, behavior: "auto" }); // vai pro topo sem cortar
 }
 window.addEventListener("load", applyTopbarOffset);
 window.addEventListener("resize", applyTopbarOffset);
@@ -282,7 +294,7 @@ onSnapshot(query(colMatches, orderBy("date")), async (snap)=>{
   state.matches = newMatches;
   renderMatches(); renderTables(); renderPlayerDetails(); renderHome(); renderAdminSemisList();
 
-  autoPostponeOverdueMatches(); // adiar 24h após data
+  autoPostponeOverdueMatches(); // adiar 24h após data (apenas a que expirar)
   checkAndAutoCreateSemis();    // criar semis + post quando F. Grupos terminar
 });
 
@@ -417,8 +429,8 @@ $("#player-search-btn")?.addEventListener("click", ()=>{
 function renderPlayerSelect(){
   const sel = $("#player-select"); if(!sel) return;
   sel.innerHTML = "";
-  option(sel, "", "— selecione —");
-  state.players.forEach(p => option(sel, p.id, p.name));
+  const opt = document.createElement("option"); opt.value=""; opt.textContent="— selecione —"; sel.appendChild(opt);
+  state.players.forEach(p => { const o=document.createElement("option"); o.value=p.id; o.textContent=p.name; sel.appendChild(o); });
   sel.onchange = renderPlayerDetails;
 }
 function renderPlayerDetails(){
@@ -528,47 +540,62 @@ function renderMatches(){
 }
 $("#filter-stage")?.addEventListener("change", renderMatches);
 
-/* ===== Adiamento automático (24h após a data) ===== */
+/* ===== Adiamento automático (24h após a data EXATA; só a que expirar) ===== */
 async function autoPostponeOverdueMatches(){
   if(!state.admin) return;
+
   const now = Date.now();
   const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
   const tasks = [];
 
   for(const m of state.matches){
+    // precisa ter data válida
     if(!m?.date) continue;
-    if(m?.result) continue; // já decidido
-    const due = (parseLocalDate(m.date)?.getTime() || 0) + 24*60*60*1000;
-    if(now >= due){
-      tasks.push(runTransaction(db, async (tx)=>{
-        const ref = doc(db,"matches", m.id);
-        const snap = await tx.get(ref);
-        if(!snap.exists()) return;
-        const cur = snap.data();
-        if(cur.result) return;
-        if(cur.postponedNotice) return;
+    const dt = parseLocalDate(m.date);
+    if(!dt) continue; // se formato inesperado, não faz nada
+    // não mexe se já tem resultado (inclui "postponed")
+    if(m?.result) continue;
 
-        tx.update(ref, {
-          result: "postponed",
-          postponedAt: serverTimestamp(),
-          postponedNotice: true
-        });
+    const due = dt.getTime() + 24*60*60*1000; // +24h exatas
+    if(now < due) continue; // ainda não venceu o prazo → pula
 
-        const postsRef = doc(collection(db,"posts"));
-        const aName = mapP[cur.aId] || "?";
-        const bName = mapP[cur.bId] || "?";
-        const title = `Partida adiada: ${aName} × ${bName}`;
-        const body  = `A partida ${cur.code ? `(${cur.code}) ` : ""}${aName} × ${bName}, marcada para ${fmtLocalDateStr(cur.date)}, foi automaticamente marcada como **ADIADA** por falta de atualização do resultado após 24 horas. Favor remarcar com a organização.`;
-        tx.set(postsRef, { title, body, createdAt: serverTimestamp(), author: "Sistema", authorEmail: "" });
-      }));
-    }
+    // venceu agora (ou já venceu) → adiar apenas ESTA partida (transação por partida)
+    tasks.push(runTransaction(db, async (tx)=>{
+      const ref = doc(db,"matches", m.id);
+      const snap = await tx.get(ref);
+      if(!snap.exists()) return;
+      const cur = snap.data();
+
+      // revalida dentro da transação
+      if(cur?.result) return;                // já tem resultado/adiado
+      if(cur?.postponedNotice) return;       // já avisado
+
+      // (re)parse da data armazenada no servidor
+      const curDt = parseLocalDate(cur.date);
+      if(!curDt) return;                     // se a data ficou inválida, não faz nada
+      const curDue = curDt.getTime() + 24*60*60*1000;
+      if(Date.now() < curDue) return;        // ainda não venceu (condição mudou)
+
+      tx.update(ref, {
+        result: "postponed",
+        postponedAt: serverTimestamp(),
+        postponedNotice: true
+      });
+
+      const postsRef = doc(collection(db,"posts"));
+      const aName = mapP[cur.aId] || "?";
+      const bName = mapP[cur.bId] || "?";
+      const title = `Partida adiada: ${aName} × ${bName}`;
+      const body  = `A partida ${cur.code ? `(${cur.code}) ` : ""}${aName} × ${bName}, marcada para ${fmtLocalDateStr(cur.date)}, foi automaticamente marcada como **ADIADA** (24h após o prazo sem resultado).`;
+      tx.set(postsRef, { title, body, createdAt: serverTimestamp(), author: "Sistema", authorEmail: "" });
+    }));
   }
+
   if(tasks.length) await Promise.allSettled(tasks);
 }
 
 /* ===== Semifinais automáticas ao concluir F. Grupos + post ===== */
 async function checkAndAutoCreateSemis(){
-  // precisa estar tudo concluído na F. Grupos (A/B/draw); 'postponed' NÃO conta
   const groupMatches = state.matches.filter(m => m.stage==="groups");
   if(groupMatches.length === 0) return;
 
@@ -576,9 +603,8 @@ async function checkAndAutoCreateSemis(){
   if(!allDone) return;
 
   const existingSemis = state.matches.filter(m => m.stage==="semifinal");
-  if(existingSemis.length >= 2) return; // já existem
+  if(existingSemis.length >= 2) return;
 
-  // monta top-2 por grupo
   const stats = statsFromMatches();
   const byGroup = { A:[], B:[] };
   Object.values(stats).forEach(s => (byGroup[s.group]||[]).push(s));
@@ -587,7 +613,6 @@ async function checkAndAutoCreateSemis(){
   const a1 = byGroup.A[0], a2 = byGroup.A[1], b1 = byGroup.B[0], b2 = byGroup.B[1];
   if(!(a1 && a2 && b1 && b2)) return;
 
-  // cria semis + post
   const pairs = [
     { a:a1.id, b:b2.id, code:"SF-1" },
     { a:b1.id, b:a2.id, code:"SF-2" },
@@ -603,20 +628,21 @@ async function checkAndAutoCreateSemis(){
   await addDoc(collection(db,"posts"), { title, body, createdAt: serverTimestamp(), author:"Sistema", authorEmail:"" });
 }
 
-/* ========================= Admin: Players ========================= */
-function option(el, value, label){ const o=document.createElement("option"); o.value=value; o.textContent=label; el.appendChild(o); }
+/* ========================= Players/Admin helpers ========================= */
 function fillPlayersSelects(){
   const selects = ["match-a","match-b","semi1-a","semi1-b","semi2-a","semi2-b"];
   selects.forEach(id=>{
     const el = $("#"+id);
     if(!el) return;
     el.innerHTML = "";
-    option(el, "", "— selecione —");
-    state.players.forEach(p => option(el, p.id, `${p.name} (${p.group})`));
+    const opt = document.createElement("option"); opt.value=""; opt.textContent="— selecione —"; el.appendChild(opt);
+    state.players.forEach(p => { const o=document.createElement("option"); o.value=p.id; o.textContent=`${p.name} (${p.group})`; el.appendChild(o); });
   });
   const listSel = $("#player-select");
   if(listSel && !listSel.value) renderPlayerSelect();
 }
+
+/* ========================= Admin: Players ========================= */
 $("#player-form")?.addEventListener("submit", async (e)=>{
   e.preventDefault();
   const id = $("#player-id").value;
