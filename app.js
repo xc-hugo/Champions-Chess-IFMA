@@ -1,9 +1,9 @@
 // app.js — Champions Chess IFMA (Firebase v12.2.1)
-// Requer firebase.js (Auth + Firestore) já configurado
+// Requer firebase.js atualizado (com Google, setDisplayName e Firestore)
 
 import {
   auth, db,
-  loginEmailPassword, signupEmailPassword, logout, watchAuth, isAdmin,
+  loginEmailPassword, signupEmailPassword, loginWithGoogle, logout, watchAuth, isAdmin, setDisplayName,
   collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
   onSnapshot, query, orderBy, where, serverTimestamp
 } from "./firebase.js";
@@ -28,6 +28,7 @@ function option(el, value, label){ const o=document.createElement("option"); o.v
 let state = {
   user: null,
   admin: false,
+  profile: null,
   players: [],
   matches: [],
   posts: [],
@@ -51,6 +52,7 @@ $("#btn-signup-tab")?.addEventListener("click", ()=>{
   $("#auth-title").textContent = "Criar conta";
 });
 
+// Email/senha
 $("#login-form")?.addEventListener("submit", async (e)=>{
   e.preventDefault();
   const email = $("#login-email").value.trim();
@@ -70,7 +72,34 @@ $("#signup-form")?.addEventListener("submit", async (e)=>{
     loginModal.classList.add("hidden");
   }catch(err){ alert("Erro ao cadastrar: " + err.message); }
 });
+// Google
+$("#btn-google")?.addEventListener("click", async ()=>{
+  try{
+    await loginWithGoogle();
+    loginModal.classList.add("hidden");
+  }catch(err){ alert("Erro no Google: " + err.message); }
+});
+
 $("#btn-logout")?.addEventListener("click", async ()=> { await logout(); });
+
+// ======= Perfil =======
+const colProfiles = collection(db, "profiles");
+async function loadProfile(uid){
+  if(!uid){ state.profile=null; renderProfile(); return; }
+  const snap = await getDoc(doc(db,"profiles",uid));
+  state.profile = snap.exists() ? snap.data() : null;
+  renderProfile();
+}
+$("#profile-form")?.addEventListener("submit", async (e)=>{
+  e.preventDefault();
+  if(!state.user) return alert("Entre para editar.");
+  const name = $("#profile-name").value.trim();
+  try{
+    await setDoc(doc(db,"profiles",state.user.uid), { displayName: name, updatedAt: serverTimestamp(), email: state.user.email }, { merge: true });
+    await setDisplayName(state.user, name);
+    alert("Perfil salvo!");
+  }catch(err){ alert("Erro ao salvar: "+err.message); }
+});
 
 // ======= Watch Auth =======
 watchAuth(async (user)=>{
@@ -78,7 +107,7 @@ watchAuth(async (user)=>{
   $("#btn-open-login")?.classList.toggle("hidden", !!user);
   $("#btn-logout")?.classList.toggle("hidden", !user);
   $("#user-chip")?.classList.toggle("hidden", !user);
-  if($("#user-email")) $("#user-email").textContent = user ? user.email : "";
+  if($("#user-email")) $("#user-email").textContent = user ? (user.displayName || user.email) : "";
 
   state.admin = user ? await isAdmin(user.uid) : false;
   $("#admin-badge")?.classList.toggle("hidden", !state.admin);
@@ -88,6 +117,8 @@ watchAuth(async (user)=>{
   // Chat: input só se logado
   $("#chat-form")?.classList.toggle("hidden", !user);
   $("#chat-login-hint")?.classList.toggle("hidden", !!user);
+
+  await loadProfile(user?.uid || null);
 });
 
 // ======= Firestore listeners =======
@@ -103,6 +134,7 @@ onSnapshot(query(colPlayers, orderBy("name")), snap=>{
   renderTables();
   renderPlayerSelect();
   renderHome();
+  renderAdminSemisList();
 });
 onSnapshot(query(colMatches, orderBy("date")), snap=>{
   state.matches = snap.docs.map(d => ({ id:d.id, ...d.data() }));
@@ -110,6 +142,7 @@ onSnapshot(query(colMatches, orderBy("date")), snap=>{
   renderTables();
   renderPlayerDetails();
   renderHome();
+  renderAdminSemisList();
 });
 onSnapshot(query(colPosts, orderBy("createdAt","desc")), snap=>{
   state.posts = snap.docs.map(d => ({ id:d.id, ...d.data() }));
@@ -148,24 +181,44 @@ function statsFromMatches(){
 }
 
 // ======= Home =======
+// mostrar 4 primeiras partidas de HOJE; se não tiver, pegar do PRÓXIMO DIA com partidas
 function renderHome(){
   const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
-  const upcoming = state.matches
-    .filter(m => !!m.date)
-    .slice(0,5)
-    .map(m => `
-      <tr>
-        <td>${m.stage || "-"}</td>
-        <td>${m.group || "-"}</td>
-        <td>${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}</td>
-        <td>${fmtDateStr(m.date)}</td>
-        <td>${m.code || "-"}</td>
-      </tr>
-    `).join("");
+  const scheduled = state.matches.filter(m => !!m.date).slice(); // já ordenado por 'date'
+  const today = new Date(); const start = new Date(today); start.setHours(0,0,0,0);
+  const end   = new Date(today); end.setHours(23,59,59,999);
+
+  const isSameDay = (a,b)=> a.getFullYear()==b.getFullYear() && a.getMonth()==b.getMonth() && a.getDate()==b.getDate();
+
+  let todays = scheduled.filter(m=>{ const d = new Date(m.date); return d>=start && d<=end; });
+  let pick = todays;
+  if(pick.length===0){
+    // pega o menor dia futuro com partidas
+    let nextDay = null;
+    for(const m of scheduled){
+      const d = new Date(m.date);
+      if(d > end){ nextDay = d; break; }
+    }
+    if(nextDay){
+      pick = scheduled.filter(m => isSameDay(new Date(m.date), nextDay));
+    }
+  }
+  pick = pick.slice(0,4);
+
+  const rows = pick.map(m=>`
+    <tr>
+      <td>${m.stage || "-"}</td>
+      <td>${m.group || "-"}</td>
+      <td>${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}</td>
+      <td>${fmtDateStr(m.date)}</td>
+      <td>${m.code || "-"}</td>
+    </tr>
+  `).join("");
+
   const table = `
     <table>
       <thead><tr><th>Etapa</th><th>Grupo</th><th>Partida</th><th>Data</th><th>Código</th></tr></thead>
-      <tbody>${upcoming || "<tr><td colspan='5'>Sem partidas agendadas.</td></tr>"}</tbody>
+      <tbody>${rows || "<tr><td colspan='5'>Sem partidas hoje/próximo dia.</td></tr>"}</tbody>
     </table>`;
   if($("#home-next")) $("#home-next").innerHTML = table;
 
@@ -176,21 +229,46 @@ function renderHome(){
 // ======= Players =======
 function renderPlayers(){
   const stats = statsFromMatches();
-  const cards = state.players.map(p=>{
+  const byGroup = { A:[], B:[] };
+  for(const p of state.players){
     const s = stats[p.id];
     const initials = (p.name||"?").split(" ").map(x=>x[0]).slice(0,2).join("").toUpperCase();
-    return `
-      <div class="player-card">
+    const card = `
+      <div class="player-card" data-id="${p.id}">
         <div class="avatar">${initials}</div>
         <div class="player-meta">
           <div class="name">${p.name} <span class="badge-small">Grupo ${p.group}</span></div>
           <div class="muted">Pts: <b>${s.points}</b> · J:${s.games} · V:${s.wins} · E:${s.draws} · D:${s.losses}</div>
         </div>
-      </div>
-    `;
-  }).join("");
-  if($("#players-cards")) $("#players-cards").innerHTML = cards || `<p class="muted">Nenhum jogador cadastrado.</p>`;
+      </div>`;
+    (byGroup[p.group] || byGroup.A).push(card);
+  }
+  if($("#players-cards-A")) $("#players-cards-A").innerHTML = byGroup.A.join("") || `<p class="muted">Sem jogadores.</p>`;
+  if($("#players-cards-B")) $("#players-cards-B").innerHTML = byGroup.B.join("") || `<p class="muted">Sem jogadores.</p>`;
+
+  // clique no card seleciona jogador
+  $$("#players-cards-A .player-card, #players-cards-B .player-card").forEach(c=>{
+    c.onclick = ()=>{
+      $$(".player-card").forEach(x=>x.classList.remove("selected"));
+      c.classList.add("selected");
+      const id = c.dataset.id;
+      const sel = $("#player-select");
+      if(sel){ sel.value = id; renderPlayerDetails(); }
+      showTab("players");
+    };
+  });
 }
+$("#player-search-btn")?.addEventListener("click", ()=>{
+  const q = ($("#player-search")?.value||"").toLowerCase();
+  const found = state.players.find(p => p.name.toLowerCase().includes(q));
+  if(found){
+    const sel = $("#player-select"); if(sel){ sel.value = found.id; renderPlayerDetails(); }
+    // destaca card
+    $$(".player-card").forEach(x=>x.classList.toggle("selected", x.dataset.id===found.id));
+  }else{
+    alert("Jogador não encontrado.");
+  }
+});
 
 function renderPlayerSelect(){
   const sel = $("#player-select"); if(!sel) return;
@@ -204,7 +282,8 @@ function renderPlayerDetails(){
   const id = sel.value;
   const box = $("#player-details"); if(!box) return;
   if(!id){ box.innerHTML = `<p class="muted">Selecione um jogador para ver detalhes.</p>`; return; }
-  const s = statsFromMatches()[id];
+  const stats = statsFromMatches();
+  const s = stats[id];
   if(!s){ box.innerHTML = `<p class="muted">Sem dados.</p>`; return; }
   const wins = Object.entries(s.winsOver).map(([name,c])=>`<span class="pill">Venceu ${name} ×${c}</span>`).join("") || "<span class='muted'>Sem vitórias registradas.</span>";
   box.innerHTML = `
@@ -246,47 +325,56 @@ function renderTables(){
   });
 }
 
-// ======= Partidas =======
+// ======= Partidas (organizado por etapa/grupo) =======
 function renderMatches(){
   const stageF = $("#filter-stage")?.value || "all";
-  const groupF = $("#filter-group")?.value || "all";
+  const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
 
   let arr = state.matches.slice();
   if(stageF !== "all") arr = arr.filter(m => m.stage === stageF);
-  if(groupF !== "all") arr = arr.filter(m => (m.group||"") === groupF);
 
-  const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
-  const rows = arr.map(m=>{
-    const res = m.result === "A" ? mapP[m.aId]
-              : m.result === "B" ? mapP[m.bId]
-              : m.result === "draw" ? "Empate" : "Pendente";
-    return `<tr data-id="${m.id}">
-      <td>${m.stage || "-"}</td>
-      <td>${m.group || "-"}</td>
-      <td>${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}</td>
-      <td>${fmtDateStr(m.date)}</td>
-      <td>${m.code || "-"}</td>
-      <td>${res}</td>
-      ${state.admin ? `<td><button class="btn ghost btn-edit" data-id="${m.id}">Editar</button></td>` : ""}
-    </tr>`;
-  }).join("");
+  // grupos A/B
+  const gA = arr.filter(m => m.stage==="groups" && m.group==="A");
+  const gB = arr.filter(m => m.stage==="groups" && m.group==="B");
+  const ko = arr.filter(m => m.stage!=="groups");
 
+  const makeTable = (items)=>`
+    <table>
+      <thead><tr><th>Etapa</th><th>Grupo</th><th>Partida</th><th>Data/Hora</th><th>Código</th><th>Resultado</th>${state.admin?`<th>Ações</th>`:""}</tr></thead>
+      <tbody>
+        ${items.map(m=>{
+          const res = m.result==="A"? mapP[m.aId] : m.result==="B"? mapP[m.bId] : m.result==="draw"? "Empate" : "Pendente";
+          return `<tr data-id="${m.id}">
+            <td>${m.stage||"-"}</td>
+            <td>${m.group||"-"}</td>
+            <td>${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}</td>
+            <td>${fmtDateStr(m.date)}</td>
+            <td>${m.code||"-"}</td>
+            <td>${res}</td>
+            ${state.admin?`<td><button class="btn ghost btn-edit" data-id="${m.id}">Editar</button></td>`:""}
+          </tr>`;
+        }).join("")}
+      </tbody>
+    </table>`;
+
+  const html = `
+    <div class="card" style="margin-bottom:12px">
+      <h3>Fase de Grupos – Grupo A</h3>
+      <div class="table">${makeTable(gA)}</div>
+    </div>
+    <div class="card" style="margin-bottom:12px">
+      <h3>Fase de Grupos – Grupo B</h3>
+      <div class="table">${makeTable(gB)}</div>
+    </div>
+    <div class="card">
+      <h3>Mata-mata (Semifinais/Final/3º)</h3>
+      <div class="table">${makeTable(ko)}</div>
+    </div>
+  `;
   const box = $("#matches-list");
-  if(box){
-    box.innerHTML = `
-      <table>
-        <thead><tr>
-          <th>Etapa</th><th>Grupo</th><th>Partida</th><th>Data/Hora</th><th>Código</th><th>Resultado</th>${state.admin?`<th>Ações</th>`:""}
-        </tr></thead>
-        <tbody>${rows}</tbody>
-      </table>`;
-    if(state.admin){
-      $$(".btn-edit").forEach(b => b.onclick = () => loadMatchToForm(b.dataset.id));
-    }
-  }
+  if(box){ box.innerHTML = html; if(state.admin){ $$(".btn-edit").forEach(b => b.onclick = () => loadMatchToForm(b.dataset.id)); } }
 }
 $("#filter-stage")?.addEventListener("change", renderMatches);
-$("#filter-group")?.addEventListener("change", renderMatches);
 
 // ======= Admin: Players =======
 function fillPlayersSelects(){
@@ -330,7 +418,7 @@ async function loadMatchToForm(id){
   $("#match-b").value = m.bId || "";
   $("#match-stage").value = m.stage || "groups";
   $("#match-group").value = m.group || "";
-  // Corrigido: guarda original e só altera a data se o usuário mudar o campo
+  // Corrigido: guarda original e só altera a data se mudar o campo
   $("#match-date").value = m.date || "";
   $("#match-date-orig").value = m.date || "";
   $("#match-date").dataset.dirty = "false";
@@ -376,7 +464,7 @@ $("#match-form")?.addEventListener("submit", async (e)=>{
   }catch(err){ alert("Erro: "+err.message); }
 });
 
-// ======= Posts (SEM anexo/imagem) =======
+// ======= Posts (sem anexo) =======
 $("#post-form")?.addEventListener("submit", async (e)=>{
   e.preventDefault();
   const title = $("#post-title").value.trim();
@@ -409,7 +497,7 @@ $("#chat-form")?.addEventListener("submit", async (e)=>{
   const text = $("#chat-text").value.trim();
   if(!text) return;
   const expireAt = new Date(Date.now() + 24*60*60*1000);
-  await addDoc(collection(db,"chat"), { text, author: auth.currentUser.email, createdAt: serverTimestamp(), expireAt });
+  await addDoc(collection(db,"chat"), { text, author: auth.currentUser.displayName || auth.currentUser.email, createdAt: serverTimestamp(), expireAt });
   $("#chat-text").value = "";
 });
 function renderChat(){
@@ -423,7 +511,31 @@ function renderChat(){
   if($("#chat-list")) $("#chat-list").innerHTML = html || `<p class="muted">Sem mensagens nas últimas 24h.</p>`;
 }
 
+// ======= Perfil – render =======
+function renderProfile(){
+  if(!$("#profile-form")) return;
+  const u = state.user;
+  $("#profile-email").value = u?.email || "";
+  $("#profile-name").value = (state.profile?.displayName) || (u?.displayName) || "";
+}
+
 // ======= Admin: Semifinais =======
+$("#semi-autofill")?.addEventListener("click", ()=>{
+  const stats = statsFromMatches();
+  const groups = {A:[], B:[]};
+  for(const id in stats){ const s=stats[id]; (groups[s.group]||[]).push(s); }
+  const sort = a=>a.sort((x,y)=> y.points-x.points || y.wins-x.wins || x.name.localeCompare(y.name));
+  sort(groups.A); sort(groups.B);
+  const topA = groups.A.slice(0,2), topB = groups.B.slice(0,2);
+  const idByName = Object.fromEntries(state.players.map(p=>[p.name,p.id]));
+  // preenche selects se existirem
+  const a1 = state.players.find(p=>p.id===topA[0]?.id); const a2 = state.players.find(p=>p.id===topA[1]?.id);
+  const b1 = state.players.find(p=>p.id===topB[0]?.id); const b2 = state.players.find(p=>p.id===topB[1]?.id);
+  if(a1 && b2){ $("#semi1-a").value = a1.id; $("#semi1-b").value = b2.id; }
+  if(b1 && a2){ $("#semi2-a").value = b1.id; $("#semi2-b").value = a2.id; }
+  alert("Semifinais preenchidas pelos Top 2 de cada grupo (não cria ainda; clique em Criar Semifinais).");
+});
+
 $("#semi-save")?.addEventListener("click", async ()=>{
   const pairs = [
     { a: $("#semi1-a").value, b: $("#semi1-b").value, code: $("#semi-code").value ? $("#semi-code").value+"-1" : "SF-1" },
@@ -435,6 +547,25 @@ $("#semi-save")?.addEventListener("click", async ()=>{
   }
   alert("Semifinais criadas. Ajuste datas/resultados em Partidas.");
 });
+
+function renderAdminSemisList(){
+  const list = state.matches.filter(m=> m.stage==="semifinal");
+  const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
+  const rows = list.map(m=>`
+    <tr>
+      <td>${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}</td>
+      <td>${fmtDateStr(m.date)}</td>
+      <td>${m.code||"-"}</td>
+      <td>${m.result||"Pendente"}</td>
+    </tr>
+  `).join("");
+  const html = `
+    <table>
+      <thead><tr><th>Semifinal</th><th>Data</th><th>Código</th><th>Resultado</th></tr></thead>
+      <tbody>${rows || "<tr><td colspan='4'>Nenhuma semifinal cadastrada.</td></tr>"}</tbody>
+    </table>`;
+  if($("#semi-list")) $("#semi-list").innerHTML = html;
+}
 
 // ======= Seed Example (admin only) =======
 $("#seed-btn")?.addEventListener("click", async ()=>{
@@ -453,9 +584,9 @@ $("#seed-btn")?.addEventListener("click", async ()=>{
     else { nameToId[name] = q.docs[0].id; }
   }
 
-  // Partidas da Fase de Grupos — usa string local 'YYYY-MM-DDTHH:mm' p/ ordem estável e sem fuso
+  // Partidas da Fase de Grupos — usa string local 'YYYY-MM-DDTHH:mm'
   const now = new Date();
-  const base = (h)=>{ const d=new Date(now.getTime()+h*3600000); return d.toISOString().slice(0,16); }; // 'YYYY-MM-DDTHH:mm'
+  const base = (h)=>{ const d=new Date(now.getTime()+h*3600000); return d.toISOString().slice(0,16); };
 
   const roundsA = [
     ["Eudison","Yuri"],["Rhuan","Luís Felipe"],
@@ -492,7 +623,7 @@ $("#seed-btn")?.addEventListener("click", async ()=>{
 
   // Mensagem no chat
   const expireAt = new Date(Date.now() + 24*60*60*1000);
-  await addDoc(collection(db,"chat"), { text:"Chat aberto! Respeito e esportividade. ♟️", author: auth.currentUser?.email || "admin", createdAt: serverTimestamp(), expireAt });
+  await addDoc(collection(db,"chat"), { text:"Chat aberto! Respeito e esportividade. ♟️", author: auth.currentUser?.displayName || auth.currentUser?.email || "admin", createdAt: serverTimestamp(), expireAt });
 
   alert("Seed concluído!");
 });
