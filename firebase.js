@@ -20,7 +20,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-auth.js";
 import {
   getFirestore, collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
-  onSnapshot, query, orderBy, where, serverTimestamp
+  onSnapshot, query, orderBy, where, serverTimestamp, runTransaction
 } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-firestore.js";
 
 // ---- Init ----
@@ -55,5 +55,5 @@ export async function isAdmin(uid){
 // ---- Reexport Firestore utils ----
 export {
   collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
-  onSnapshot, query, orderBy, where, serverTimestamp
+  onSnapshot, query, orderBy, where, serverTimestamp, runTransaction
 };
