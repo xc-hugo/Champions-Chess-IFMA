@@ -7,6 +7,14 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css"/>
+  <style>
+    /* Pequenos ajustes para garantir funcionamento imediato */
+    html, body { margin: 0; }
+    .tabs.topbar { margin: 0; }
+    /* Apostas: mais espaço entre cartões */
+    #apostas .grid-2 { gap: 24px; }
+    #apostas .card { margin-bottom: 18px; }
+  </style>
 </head>
 <body>
   <!-- HEADER -->
@@ -20,7 +28,7 @@
     </div>
 
     <div class="auth">
-      <div id="user-chip" class="chip hidden">
+      <div id="user-chip" class="chip hidden" title="Abrir perfil">
         <span id="user-email"></span>
         <span id="admin-badge" class="badge hidden">ADMIN</span>
       </div>
@@ -297,9 +305,6 @@
               <label>Partida</label>
               <select id="bet-match" required>
                 <option value="">— selecione —</option>
-                <!-- (opções de partidas ainda não são preenchidas via JS;
-                     se quiser, posso te mandar um pequeno trecho para popular
-                     esse select com as próximas partidas) -->
               </select>
             </div>
             <div class="row">
@@ -416,10 +421,10 @@
         </div>
       </div>
 
-      <div id="admin-matches" class="card admin-only hidden" style="margin-top:16px;">
-        <h3>Gerenciar Partidas</h3>
-        <!-- O mesmo formulário de "Partidas" pode ser usado aqui, se desejar duplicar -->
-        <!-- Mantive apenas na aba Partidas para evitar confusão -->
+      <!-- IMPORTANTE: ID diferente para não colidir com #admin-matches da aba Partidas -->
+      <div id="admin-matches-admin" class="card admin-only hidden" style="margin-top:16px;">
+        <h3>Gerenciar Partidas (atalho)</h3>
+        <p class="muted">Use a aba <b>Partidas</b> para editar/gerenciar. Este bloco é apenas informativo.</p>
       </div>
     </section>
   </main>
