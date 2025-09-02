@@ -44,6 +44,30 @@ function slugifyName(name){
 }
 function shortUid(uid){ return (uid || "").slice(-4) || Math.floor(Math.random()*9999).toString().padStart(4,"0"); }
 
+// ===== Scroll helper para o gerenciador de partidas =====
+function scrollToManageMatches(){
+  const target = document.querySelector("#admin-matches, #manage-matches, #match-form");
+  if(!target) return;
+  const header = document.querySelector(".topbar");
+  const offset = (header ? header.offsetHeight : 0) + 12;
+  const y = target.getBoundingClientRect().top + window.scrollY - offset;
+  window.scrollTo({ top: y, behavior: "smooth" });
+
+  // foco no primeiro campo útil
+  setTimeout(()=>{
+    const focusable = target.querySelector("select, input, textarea, button");
+    focusable && focusable.focus();
+  }, 300);
+}
+function ensureAndScrollToManage(){ // espera render se necessário
+  let tries = 0;
+  const tick = setInterval(()=>{
+    const ok = document.querySelector("#admin-matches, #manage-matches, #match-form");
+    if(ok){ clearInterval(tick); scrollToManageMatches(); }
+    if(++tries > 20) clearInterval(tick); // ~1s
+  }, 50);
+}
+
 // ========== Estado ==========
 let state = {
   user: null,
@@ -77,9 +101,7 @@ let postponeTimer = null;
 function scheduleAutoPostponeTimer(enabled){
   if(postponeTimer){ clearInterval(postponeTimer); postponeTimer=null; }
   if(enabled){
-    // roda a cada 5 minutos para cobrir mudança de dia sem alteração no Firestore
     postponeTimer = setInterval(autoPostponeOverdueMatches, 5*60*1000);
-    // e dispara uma vez agora
     autoPostponeOverdueMatches();
   }
 }
@@ -87,23 +109,16 @@ function scheduleAutoPostponeTimer(enabled){
 function setAdminFlag(flag){
   const changed = state.admin !== flag;
   state.admin = flag;
-
   $("#admin-badge")?.classList.toggle("hidden", !flag);
   $("#tab-admin")?.classList.toggle("hidden", !flag);
   $$(".admin-only").forEach(el => el.classList.toggle("hidden", !flag));
-
-  // agenda/cancela verificação periódica
   scheduleAutoPostponeTimer(flag);
-
   if (changed) {
-    renderPosts();
-    renderChat();
-    renderMatches();
-    renderHome();
-    renderAdminSemisList();
+    renderPosts(); renderChat(); renderMatches(); renderHome(); renderAdminSemisList();
   }
 }
 
+// === Corrige transação (todas leituras antes de qualquer escrita) ===
 $("#profile-form")?.addEventListener("submit", async (e)=>{
   e.preventDefault();
   if(!state.user) return alert("Entre para editar o perfil.");
@@ -114,32 +129,40 @@ $("#profile-form")?.addEventListener("submit", async (e)=>{
 
   try{
     await runTransaction(db, async (tx)=>{
-      const profRef = doc(db, "profiles", state.user.uid);
+      const uid = state.user.uid;
 
-      // solta username antigo (se houver)
+      // --- LEITURAS ---
+      const profRef = doc(db, "profiles", uid);
       const profSnap = await tx.get(profRef);
       const oldUsername = profSnap.exists() ? (profSnap.data().username || null) : null;
-      if(oldUsername){
-        const oldRef = doc(db, "usernames", oldUsername);
-        const oldSnap = await tx.get(oldRef);
-        if(oldSnap.exists() && oldSnap.data().uid === state.user.uid){
-          tx.delete(oldRef);
-        }
-      }
 
-      // reserva novo username (único)
-      let chosen = base;
       const tryRef = doc(db, "usernames", base);
       const trySnap = await tx.get(tryRef);
 
+      let chosen = base;
+      let fbRef = null, fbSnap = null;
       if(trySnap.exists()){
         chosen = fallback;
-        const fbRef = doc(db, "usernames", chosen);
-        const fbSnap = await tx.get(fbRef);
+        fbRef = doc(db, "usernames", chosen);
+        fbSnap = await tx.get(fbRef);
         if(fbSnap.exists()) throw new Error("USERNAME_TAKEN_FALLBACK");
-        tx.set(fbRef, { uid: state.user.uid, createdAt: serverTimestamp() });
-      } else {
-        tx.set(tryRef, { uid: state.user.uid, createdAt: serverTimestamp() });
+      }
+
+      let oldRef = null, oldSnap = null;
+      if(oldUsername){
+        oldRef = doc(db, "usernames", oldUsername);
+        oldSnap = await tx.get(oldRef);
+      }
+
+      // --- ESCRITAS (só agora pode escrever) ---
+      if(oldRef && oldSnap?.exists() && oldSnap.data().uid === uid){
+        tx.delete(oldRef);
+      }
+
+      if(chosen === base){
+        tx.set(tryRef, { uid, createdAt: serverTimestamp() });
+      }else{
+        tx.set(fbRef, { uid, createdAt: serverTimestamp() });
       }
 
       tx.set(profRef, {
@@ -180,10 +203,8 @@ watchAuth(async (user)=>{
 
   await loadProfile(user?.uid || null);
 
-  // começa como não-admin
   setAdminFlag(false);
 
-  // escuta em TEMPO REAL o doc admins/{uid}
   if (unsubscribeAdminWatch) unsubscribeAdminWatch();
   if (user) {
     const adminRef = doc(db, "admins", user.uid);
@@ -193,7 +214,6 @@ watchAuth(async (user)=>{
     });
   }
 
-  // re-render inicial
   renderPosts(); renderChat(); renderMatches(); renderHome(); renderAdminSemisList();
 });
 
@@ -205,27 +225,16 @@ const colChat    = collection(db, "chat");
 
 onSnapshot(query(colPlayers, orderBy("name")), snap=>{
   state.players = snap.docs.map(d => ({ id:d.id, ...d.data() }));
-  renderPlayers();
-  fillPlayersSelects();
-  renderTables();
-  renderPlayerSelect();
-  renderHome();
-  renderAdminSemisList();
+  renderPlayers(); fillPlayersSelects(); renderTables(); renderPlayerSelect(); renderHome(); renderAdminSemisList();
 });
 onSnapshot(query(colMatches, orderBy("date")), snap=>{
   state.matches = snap.docs.map(d => ({ id:d.id, ...d.data() }));
-  renderMatches();
-  renderTables();
-  renderPlayerDetails();
-  renderHome();
-  renderAdminSemisList();
-  // checa adiantamento automaticamente quando chegam/atualizam partidas
-  autoPostponeOverdueMatches();
+  renderMatches(); renderTables(); renderPlayerDetails(); renderHome(); renderAdminSemisList();
+  autoPostponeOverdueMatches(); // checa sempre que mudar
 });
 onSnapshot(query(colPosts, orderBy("createdAt","desc")), snap=>{
   state.posts = snap.docs.map(d => ({ id:d.id, ...d.data() }));
-  renderPosts();
-  renderHome();
+  renderPosts(); renderHome();
 });
 onSnapshot(query(colChat, orderBy("createdAt","desc")), snap=>{
   const now = Date.now();
@@ -466,14 +475,14 @@ $("#filter-stage")?.addEventListener("change", renderMatches);
 
 // ===== Adiamento automático (24h após a data) =====
 async function autoPostponeOverdueMatches(){
-  if(!state.admin) return; // só admin executa as mudanças
+  if(!state.admin) return; // apenas admin altera
   const now = Date.now();
   const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
 
   const tasks = [];
   for(const m of state.matches){
     if(!m?.date) continue;
-    if(m?.result) continue; // já tem resultado
+    if(m?.result) continue; // já decidido
     const due = new Date(m.date).getTime() + 24*60*60*1000; // +24h
     if(now >= due){
       tasks.push(runTransaction(db, async (tx)=>{
@@ -482,26 +491,20 @@ async function autoPostponeOverdueMatches(){
         if(!snap.exists()) return;
         const cur = snap.data();
         if(cur.result) return;                  // já decidiram
-        if(cur.postponedNotice) return;         // já tratamos antes
+        if(cur.postponedNotice) return;         // já notificado
 
-        // marca adiado e cria post (uma vez)
         tx.update(ref, {
           result: "postponed",
           postponedAt: serverTimestamp(),
           postponedNotice: true
         });
 
-        const postsRef = doc(collection(db,"posts")); // id auto
+        const postsRef = doc(collection(db,"posts"));
         const aName = mapP[cur.aId] || "?";
         const bName = mapP[cur.bId] || "?";
         const title = `Partida adiada: ${aName} × ${bName}`;
         const body  = `A partida ${cur.code ? `(${cur.code}) ` : ""}${aName} × ${bName}, marcada para ${fmtDateStr(cur.date)}, foi automaticamente marcada como **ADIADA** por falta de atualização do resultado após 24 horas. Favor remarcar com a organização.`;
-        tx.set(postsRef, {
-          title, body,
-          createdAt: serverTimestamp(),
-          author: "Sistema",
-          authorEmail: ""
-        });
+        tx.set(postsRef, { title, body, createdAt: serverTimestamp(), author: "Sistema", authorEmail: "" });
       }));
     }
   }
@@ -544,6 +547,7 @@ $("#player-delete")?.addEventListener("click", async ()=>{
 async function loadMatchToForm(id){
   const m = state.matches.find(x=>x.id===id);
   if(!m) return;
+
   $("#match-id").value = m.id;
   $("#match-a").value = m.aId || "";
   $("#match-b").value = m.bId || "";
@@ -555,13 +559,9 @@ async function loadMatchToForm(id){
   $("#match-date").oninput = ()=> $("#match-date").dataset.dirty = "true";
   $("#match-code").value = m.code || "";
   $("#match-result").value = m.result || "";
-  showTab("partidas");
 
-  // 🔽 rola suavemente até o gerenciador e foca o primeiro campo
-  setTimeout(()=>{
-    $("#admin-matches")?.scrollIntoView({ behavior:"smooth", block:"start" });
-    $("#match-a")?.focus();
-  }, 50);
+  showTab("partidas");
+  ensureAndScrollToManage(); // 🔽 garante scroll até o gerenciador
 }
 $("#match-reset")?.addEventListener("click", ()=>{ $("#match-form").reset(); $("#match-id").value=""; $("#match-date").dataset.dirty="false"; });
 $("#match-delete")?.addEventListener("click", async ()=>{
