@@ -196,3 +196,14 @@ h1{font-size:20px;margin:0}.subtitle{margin:2px 0 0;color:var(--muted);font-size
 html { scroll-behavior: smooth; scroll-padding-top: var(--topbar-h); }
 /* se seu conteúdo começa logo após a topbar fixa, vale ter um padding-top global também: */
 body { padding-top: var(--topbar-h); }
+
+/* ==== Correções de layout ==== */
+html, body { margin: 0; }
+
+/* zera qualquer margem vertical que cause “vão” antes da navbar */
+.site-header { margin: 0; }
+.tabs.topbar { margin: 0; }
+
+/* Apostas: mais espaço entre caixas */
+#apostas .grid-2 { gap: 24px; }
+#apostas .card { margin-bottom: 18px; }
