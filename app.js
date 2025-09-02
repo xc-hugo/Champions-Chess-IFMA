@@ -1,5 +1,4 @@
 // app.js — Champions Chess IFMA (Google login only, Firestore)
-// Requer: index.html + styles.css + firebase.js + assets (logo.png, ChampionsChessIFMA.pdf)
 
 import {
   auth, db,
@@ -8,8 +7,8 @@ import {
   onSnapshot, query, orderBy, where, serverTimestamp, runTransaction
 } from "./firebase.js";
 
-// ========== Helpers de UI ==========
-const $ = s => document.querySelector(s);
+// ========== Helpers ==========
+const $  = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
 
 function showTab(id){
@@ -25,7 +24,6 @@ showTab(location.hash.replace("#","") || "home");
 function fmtDateStr(s){ return s ? new Date(s).toLocaleString("pt-BR") : "—"; }
 function option(el, value, label){ const o=document.createElement("option"); o.value=value; o.textContent=label; el.appendChild(o); }
 
-// Rótulo amigável para etapa
 function stageLabel(s){
   switch((s||"").toLowerCase()){
     case "groups":    return "F. Grupos";
@@ -36,7 +34,6 @@ function stageLabel(s){
   }
 }
 
-// Slug/username helpers
 function slugifyName(name){
   return (name || "")
     .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
@@ -58,7 +55,7 @@ let state = {
   chat: []
 };
 
-// ========== Auth (Google only) ==========
+// ========== Auth ==========
 $("#btn-open-login")?.addEventListener("click", async ()=>{
   try { await loginWithGoogle(); }
   catch(err){ alert("Erro ao entrar com Google: " + err.message); }
@@ -72,6 +69,28 @@ async function loadProfile(uid){
   state.profile = snap.exists() ? snap.data() : null;
   renderProfile();
 }
+
+// Admin realtime toggle
+let unsubscribeAdminWatch = null;
+function setAdminFlag(flag){
+  const changed = state.admin !== flag;
+  state.admin = flag;
+
+  // toggles de UI imediatos
+  $("#admin-badge")?.classList.toggle("hidden", !flag);
+  $("#tab-admin")?.classList.toggle("hidden", !flag);
+  $$(".admin-only").forEach(el => el.classList.toggle("hidden", !flag));
+
+  // se mudou, re-renderiza tudo que depende de admin (botões/ações)
+  if (changed) {
+    renderPosts();
+    renderChat();
+    renderMatches();
+    renderHome();            // inclui botões de apagar no card de Home
+    renderAdminSemisList();
+  }
+}
+
 $("#profile-form")?.addEventListener("submit", async (e)=>{
   e.preventDefault();
   if(!state.user) return alert("Entre para editar o perfil.");
@@ -84,7 +103,7 @@ $("#profile-form")?.addEventListener("submit", async (e)=>{
     await runTransaction(db, async (tx)=>{
       const profRef = doc(db, "profiles", state.user.uid);
 
-      // soltar username antigo (se houver)
+      // solta username antigo (se houver)
       const profSnap = await tx.get(profRef);
       const oldUsername = profSnap.exists() ? (profSnap.data().username || null) : null;
       if(oldUsername){
@@ -95,7 +114,7 @@ $("#profile-form")?.addEventListener("submit", async (e)=>{
         }
       }
 
-      // reservar novo username
+      // reserva novo username (único)
       let chosen = base;
       const tryRef = doc(db, "usernames", base);
       const trySnap = await tx.get(tryRef);
@@ -119,7 +138,6 @@ $("#profile-form")?.addEventListener("submit", async (e)=>{
     });
 
     await setDisplayName(state.user, display);
-
     const snap = await getDoc(doc(db,"profiles",state.user.uid));
     state.profile = snap.exists() ? snap.data() : null;
     renderProfile();
@@ -135,7 +153,7 @@ $("#profile-form")?.addEventListener("submit", async (e)=>{
   }
 });
 
-// ========== Watch Auth ==========
+// Login/out watcher
 watchAuth(async (user)=>{
   state.user = user;
 
@@ -144,20 +162,30 @@ watchAuth(async (user)=>{
   $("#user-chip")?.classList.toggle("hidden", !user);
   if($("#user-email")) $("#user-email").textContent = user ? (user.displayName || user.email) : "";
 
-  state.admin = user ? await isAdmin(user.uid) : false;
-  $("#admin-badge")?.classList.toggle("hidden", !state.admin);
-  $("#tab-admin")?.classList.toggle("hidden", !state.admin);
-  $$(".admin-only").forEach(el => el.classList.toggle("hidden", !state.admin));
-
+  // libera chat input só logado
   $("#chat-form")?.classList.toggle("hidden", !user);
   $("#chat-login-hint")?.classList.toggle("hidden", !!user);
 
   await loadProfile(user?.uid || null);
 
-  // 🔄 Re-render imediato para mostrar botões de admin sem precisar atualizar/postar nada
+  // (1) para qualquer usuário, começa como não-admin
+  setAdminFlag(false);
+
+  // (2) escuta em TEMPO REAL o doc admins/{uid}
+  if (unsubscribeAdminWatch) unsubscribeAdminWatch();
+  if (user) {
+    const adminRef = doc(db, "admins", user.uid);
+    unsubscribeAdminWatch = onSnapshot(adminRef, (snap)=>{
+      const active = snap.exists() && !!snap.data().active;
+      setAdminFlag(active);
+    });
+  }
+
+  // re-render inicial (caso onSnapshot já tenha carregado dados antes do admin toggle)
   renderPosts();
   renderChat();
   renderMatches();
+  renderHome();
   renderAdminSemisList();
 });
 
@@ -197,7 +225,7 @@ onSnapshot(query(colChat, orderBy("createdAt","desc")), snap=>{
   renderChat();
 });
 
-// ========== Estatísticas (3/1/0 só nos grupos) ==========
+// ========== Estatísticas (3/1/0 nos grupos) ==========
 function statsFromMatches(){
   const stats = {};
   for(const p of state.players){
@@ -220,7 +248,7 @@ function statsFromMatches(){
   return stats;
 }
 
-// ========== Home (4 partidas hoje ou próximo dia) ==========
+// ========== Home (4 próximas de hoje/próximo dia) ==========
 function renderHome(){
   const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
   const scheduled = state.matches.filter(m => !!m.date).slice();
@@ -258,7 +286,6 @@ function renderHome(){
   const posts = state.posts.slice(0,3).map(p=> renderPostItem(p)).join("");
   if($("#home-posts")) {
     $("#home-posts").innerHTML = posts || `<p class="muted">Sem comunicados.</p>`;
-    // permitir apagar do card da Home também (admin)
     if (state.admin) {
       document.querySelectorAll("#home-posts .btn-del-post").forEach(b=>{
         b.onclick = async ()=>{
@@ -368,7 +395,7 @@ function renderTables(){
   });
 }
 
-// ========== Partidas (inclui 'Adiado' e rótulos de etapa) ==========
+// ========== Partidas ==========
 function renderMatches(){
   const stageF = $("#filter-stage")?.value || "all";
   const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
@@ -468,7 +495,6 @@ async function loadMatchToForm(id){
   $("#match-b").value = m.bId || "";
   $("#match-stage").value = m.stage || "groups";
   $("#match-group").value = m.group || "";
-  // ✅ Data só muda se usuário editar
   $("#match-date").value = m.date || "";
   $("#match-date-orig").value = m.date || "";
   $("#match-date").dataset.dirty = "false";
@@ -605,7 +631,7 @@ function renderChat(){
   }
 }
 
-// ========== Perfil — render ==========
+// ========== Perfil ==========
 function renderProfile(){
   if(!$("#profile-form")) return;
   const u = state.user;
@@ -658,12 +684,11 @@ function renderAdminSemisList(){
   if($("#semi-list")) $("#semi-list").innerHTML = html;
 }
 
-// ========== Seed Example (admin only) ==========
+// ========== Seed (admin) ==========
 $("#seed-btn")?.addEventListener("click", async ()=>{
   if(!state.admin){ alert("Apenas admins."); return; }
   if(!confirm("Adicionar dados de exemplo?")) return;
 
-  // Players
   const players = [
     ["Hugo","A"],["Eudison","A"],["Rhuan","A"],["Luís Felipe","A"],["Yuri","A"],
     ["Kelvin","B"],["Marcos","B"],["Davi","B"],["Alyson","B"],["Wemerson","B"]
@@ -675,7 +700,6 @@ $("#seed-btn")?.addEventListener("click", async ()=>{
     else { nameToId[name] = q.docs[0].id; }
   }
 
-  // Matches — string 'YYYY-MM-DDTHH:mm' (ordem estável)
   const now = new Date();
   const base = (h)=>{ const d=new Date(now.getTime()+h*3600000); return d.toISOString().slice(0,16); };
 
@@ -708,7 +732,6 @@ $("#seed-btn")?.addEventListener("click", async ()=>{
     });
   }
 
-  // Posts e chat
   await addDoc(collection(db,"posts"), { title:"Bem-vindos!", body:"Início do campeonato. Boa sorte a todos!", createdAt: serverTimestamp(), author: auth.currentUser?.displayName || auth.currentUser?.email || "admin", authorEmail: auth.currentUser?.email || "" });
   await addDoc(collection(db,"posts"), { title:"Regras", body:"Pontuação 3-1-0 (fase de grupos). Top-2 avança (G2).", createdAt: serverTimestamp(), author: auth.currentUser?.displayName || auth.currentUser?.email || "admin", authorEmail: auth.currentUser?.email || "" });
 
