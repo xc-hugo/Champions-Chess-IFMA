@@ -23,7 +23,7 @@
         <span id="user-email"></span>
         <span id="admin-badge" class="badge hidden">ADMIN</span>
       </div>
-      <button id="btn-open-login" class="btn ghost">Entrar</button>
+      <button id="btn-open-login" class="btn ghost">Entrar com Google</button>
       <button id="btn-logout" class="btn danger hidden">Sair</button>
     </div>
   </header>
@@ -46,11 +46,11 @@
       <div class="grid-2">
         <div class="card">
           <h2>Bem-vindo ao Champions Chess IFMA</h2>
-          <p>Confira o resumo e as próximas partidas do dia.</p>
+          <p>Resumo do campeonato e próximas partidas.</p>
           <ul class="list">
-            <li>Formato: 10 jogadores, 2 grupos de 5.</li>
-            <li>Pontuação da fase de grupos: 3–1–0.</li>
-            <li>Top-2 de cada grupo (G2) avança.</li>
+            <li>Formato: 10 jogadores, 2 grupos de 5;</li>
+            <li>Pontuação (grupos): 3–1–0;</li>
+            <li>G2: Top-2 de cada grupo para o mata-mata.</li>
           </ul>
           <div class="cta-row">
             <a class="btn" href="#regulamento" onclick="location.hash='regulamento'">Ver Regulamento</a>
@@ -75,18 +75,17 @@
         <div class="card">
           <h2>Regulamento</h2>
           <ul class="list">
-            <li>10 jogadores divididos em 2 grupos de 5; todos jogam entre si dentro do grupo.</li>
-            <li>Pontuação fase de grupos: vitória 3, empate 1, derrota 0.</li>
-            <li>Classificam-se os 2 melhores (G2) de cada grupo.</li>
-            <li>Semifinais: 1ºA × 2ºB e 1ºB × 2ºA; depois Final e 3º lugar.</li>
-            <li>Partidas monitoradas com registro em print e validação.</li>
+            <li>10 jogadores em 2 grupos de 5; todos se enfrentam no grupo.</li>
+            <li>Pontuação (grupos): vitória 3, empate 1, derrota 0.</li>
+            <li>G2: 1ºA×2ºB e 1ºB×2ºA; depois Final e 3º lugar.</li>
+            <li>Partidas monitoradas e resultados validados.</li>
           </ul>
         </div>
         <div class="card">
           <h2>PDF (pré-visualização)</h2>
           <div class="pdf-wrap">
             <object data="ChampionsChessIFMA.pdf" type="application/pdf" width="100%" height="540">
-              <p>Seu navegador não exibiu o PDF.
+              <p>Não foi possível exibir o PDF.
                 <a class="btn" href="ChampionsChessIFMA.pdf" target="_blank" rel="noopener">Abrir PDF</a>
               </p>
             </object>
@@ -184,7 +183,7 @@
         <h2>Buscar jogador</h2>
         <div class="row">
           <input id="player-search" placeholder="Digite para buscar…"/>
-          <button id="player-search-btn" class="btn">Ver detalhes</button>
+          <button id="player-search-btn" class="btn">Buscar</button>
         </div>
       </div>
 
@@ -258,7 +257,7 @@
     <section id="chat" class="view">
       <div class="card">
         <h2>Chat da Comunidade</h2>
-        <p class="muted">Apenas usuários logados podem enviar mensagens. Mensagens expiram após 24h.</p>
+        <p class="muted">Apenas usuários logados podem enviar. Mensagens expiram após 24h.</p>
         <div id="chat-list" class="chat-list"></div>
         <form id="chat-form" class="form chat-form">
           <div class="row">
@@ -289,7 +288,6 @@
             <button class="btn" type="submit">Salvar</button>
           </div>
         </form>
-        <p class="muted">O nome aparece no chat e nos comunicados.</p>
       </div>
     </section>
 
@@ -298,7 +296,7 @@
       <div class="grid-2">
         <div class="card">
           <h2>Semifinais</h2>
-          <p>Cadastre manualmente ou use o botão <b>Auto (Top 2)</b> para preencher com base na tabela.</p>
+          <p>Preencha manualmente ou use <b>Auto (Top 2)</b>.</p>
           <div class="row">
             <button id="semi-autofill" class="btn ghost">Auto (Top 2)</button>
           </div>
