@@ -1,6 +1,6 @@
-// firebase.js — SDK v12.2.1 (CDN)
+// firebase.js — SDK v12.2.1 (CDN) com Firestore + Auth + Storage
 
-// ---- CONFIG DO SEU PROJETO ----
+// ---- SUA CONFIG ----
 export const firebaseConfig = {
   apiKey: "AIzaSyCP3RH4aR-sSbB7CeZV6c6cpj9fC4HjhCw",
   authDomain: "championschessifma.firebaseapp.com",
@@ -16,25 +16,30 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/12.2.1/firebas
 import { getAnalytics }   from "https://www.gstatic.com/firebasejs/12.2.1/firebase-analytics.js";
 import {
   getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut,
-  setPersistence, browserLocalPersistence
+  setPersistence, browserLocalPersistence, createUserWithEmailAndPassword
 } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-auth.js";
 import {
   getFirestore, collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
   onSnapshot, query, orderBy, where, serverTimestamp
 } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-firestore.js";
+import {
+  getStorage, ref, uploadBytes, getDownloadURL
+} from "https://www.gstatic.com/firebasejs/12.2.1/firebase-storage.js";
 
 // ---- INIT ----
 export const app = initializeApp(firebaseConfig);
 export const analytics = getAnalytics(app);
-
 export const auth = getAuth(app);
-setPersistence(auth, browserLocalPersistence); // mantém login no navegador
-
+setPersistence(auth, browserLocalPersistence);
 export const db = getFirestore(app);
+export const storage = getStorage(app);
 
-// ---- HELPERS (usados no app.js) ----
+// ---- HELPERS ----
 export async function loginEmailPassword(email, password) {
   return signInWithEmailAndPassword(auth, email, password);
+}
+export async function signupEmailPassword(email, password){
+  return createUserWithEmailAndPassword(auth, email, password);
 }
 export async function logout(){ return signOut(auth); }
 export function watchAuth(cb){ return onAuthStateChanged(auth, cb); }
@@ -42,13 +47,14 @@ export function watchAuth(cb){ return onAuthStateChanged(auth, cb); }
 // Admin = documento em /admins/{uid} com {active:true}
 export async function isAdmin(uid){
   if(!uid) return false;
-  const ref = doc(db, "admins", uid);
-  const snap = await getDoc(ref);
+  const refDoc = doc(db, "admins", uid);
+  const snap = await getDoc(refDoc);
   return snap.exists() && !!snap.data().active;
 }
 
-// Reexport firestore utils p/ app.js
+// Reexport utils p/ app.js
 export {
   collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
-  onSnapshot, query, orderBy, where, serverTimestamp
+  onSnapshot, query, orderBy, where, serverTimestamp,
+  ref, uploadBytes, getDownloadURL
 };
