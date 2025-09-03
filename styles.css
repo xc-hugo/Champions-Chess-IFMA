@@ -207,34 +207,50 @@ h1{font-size:20px;margin:0}
 .stat { background:#10161e; border:1px solid #1f2630; border-radius:10px; padding:8px 10px; font-size:13px; }
 
 /* Partidas: tabela mais limpa e intuitiva */
-#matches-list .table table{ font-size:13px; }
+/* ===== NAVBAR NÃO FIXA (garantia) ===== */
+.tabs.topbar{ position: static !important; top: auto !important; }
+
+/* ===== Partidas: Tabela limpa, colunas alinhadas ===== */
+#matches-list .table table{
+  width: 100%;
+  border-collapse: collapse;     /* sem gaps */
+  table-layout: auto;            /* largura flui; se quiser fixar, troque pra fixed */
+}
+#matches-list th, #matches-list td{
+  padding: 10px 12px;
+  border-bottom: 1px solid #243041;
+  text-align: left;
+  vertical-align: middle;        /* alinha verticalmente no centro */
+  white-space: normal;
+}
+
+/* Zebra leve e hover */
 #matches-list .table tbody tr:nth-child(odd){ background:#0f141d; }
 #matches-list .table tbody tr:hover{ background:#10161e; }
-/* chips para Etapa/Grupo, Código e Resultado */
-#matches-list td:nth-child(1),
-#matches-list td:nth-child(5),
-#matches-list td:nth-child(6){
-  white-space:nowrap;
-}
-#matches-list td:nth-child(1) > *,
-#matches-list td:nth-child(5) > *,
-#matches-list td:nth-child(6) > * { pointer-events:none; }
-#matches-list td:nth-child(1),
-#matches-list td:nth-child(5){
-  display:inline-block; background:#10202a; border:1px solid #1f3631;
-  color:#cde6d7; padding:6px 10px; border-radius:999px;
-}
-#matches-list td:nth-child(6){
-  display:inline-block; padding:6px 10px; border-radius:999px;
-  background:#10161e; border:1px solid #1f2630; color:#cde6d7;
-}
-/* colunas com largura mínima organizada */
-#matches-list table th:nth-child(1){ min-width: 110px; }
-#matches-list table th:nth-child(3){ min-width: 120px; }
-#matches-list table th:nth-child(4){ min-width: 160px; }
-#matches-list table th:nth-child(5){ min-width: 80px; }
-#matches-list table th:nth-child(6){ min-width: 100px; }
+
+/* Chips SEM mexer no display do TD (evita torto) */
+.chip{ display:inline-block; padding:6px 10px; border-radius:999px; }
+.chip--stage{ background:#10202a; border:1px solid #1f3631; color:#cde6d7; }
+.chip--code { background:#0f1520; border:1px solid #263044; color:#cfe2ff; }
+.chip--res  { background:#10161e; border:1px solid #1f2630; color:#cde6d7; }
+
+/* Larguras mínimas organizadas */
+#matches-list table th:nth-child(1){ min-width: 140px; } /* Etapa/Grupo */
+#matches-list table th:nth-child(3){ min-width: 120px; } /* Data/Hora */
+#matches-list table th:nth-child(5){ min-width: 80px; }  /* Código */
+#matches-list table th:nth-child(6){ min-width: 100px; } /* Resultado */
+
+/* ===== Posts: mais respiro lateral na faixa zebrada ===== */
+.posts .post > div{ padding: 0 14px; }
+
+/* ===== Home: Próximas partidas sem coluna de probabilidade ===== */
+#home-next table{ font-size:12px; line-height:1.2; }
+#home-next th, #home-next td{ padding:6px 8px; white-space:nowrap; }
+/* Garante que não sobra espaço vazio: o card expande com conteúdo adicional */
+#home .home-next-extra{ margin-top:8px; color:var(--muted); font-size:12px; line-height:1.4; }
+
 
 /* Apostas: mais espaço entre caixas */
 #apostas .grid-2 { gap: 24px; }
 #apostas .card { margin-bottom: 18px; }
+
