@@ -7,25 +7,16 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css"/>
-  <style>
-    /* Garantir que não haja “vão” acima da navbar e que ela não seja fixa */
-    html, body { margin: 0; }
-    .tabs.topbar { margin: 0; position: static !important; top: auto !important; }
-
-    /* Apostas: mais espaço entre cartões */
-    #apostas .grid-2 { gap: 24px; }
-    #apostas .card { margin-bottom: 18px; }
-  </style>
 </head>
 <body>
-  <!-- NAVBAR (TOPBAR) -->
-  <nav class="tabs topbar" style="display:flex;align-items:center;justify-content:space-between;gap:12px">
-    <div class="nav-left" style="display:flex;align-items:center;gap:10px">
-      <img src="logo.png" alt="Champions Chess IFMA" class="logo" style="width:36px;height:36px;border-radius:50%;object-fit:cover">
+  <!-- NAVBAR (TOPBAR) - não é fixa -->
+  <nav class="tabs topbar">
+    <div class="nav-left">
+      <img src="logo.png" alt="Champions Chess IFMA" class="logo logo--small">
       <strong>Champions Chess IFMA</strong>
     </div>
 
-    <div class="nav-center" style="display:flex;gap:8px;flex:1;justify-content:center">
+    <div class="nav-center">
       <button class="tab active" data-tab="home">Home</button>
       <button class="tab" data-tab="regulamento">Regulamento</button>
       <button class="tab" data-tab="partidas">Partidas</button>
@@ -34,11 +25,11 @@
       <button class="tab" data-tab="posts">Post</button>
       <button class="tab" data-tab="apostas">Apostas</button>
       <button class="tab" data-tab="chat">Chat</button>
-      <!-- Sem botão de Perfil: o chip do usuário (direita) abre a seção Perfil -->
       <button id="tab-admin" class="tab admin-only hidden" data-tab="admin">Admin</button>
     </div>
 
-    <div class="nav-right" style="display:flex;align-items:center;gap:8px">
+    <div class="nav-right">
+      <!-- O chip abre a aba Perfil -->
       <div id="user-chip" class="chip hidden" title="Abrir perfil" style="cursor:pointer">
         <span id="user-email"></span>
         <span id="admin-badge" class="badge hidden">ADMIN</span>
@@ -64,11 +55,12 @@
             <li><b>Organização:</b> Use a aba <i>Partidas</i> para datas/códigos e a aba <i>Post</i> para comunicados.</li>
           </ul>
           <div class="cta-row">
-            <a class="btn" href="#regulamento" onclick="location.hash='regulamento'">Ver Regulamento</a>
+            <a class="btn" href="#regulamento">Ver Regulamento</a>
             <a class="btn ghost" href="ChampionsChessIFMA.pdf" target="_blank" rel="noopener">Abrir PDF</a>
-            <a class="btn ghost" href="#players" onclick="location.hash='players'">Lista de Players</a>
+            <a class="btn ghost" href="#players">Lista de Players</a>
           </div>
         </div>
+
         <div class="card">
           <h2>Próximas partidas (hoje/próximo dia)</h2>
           <div id="home-next" class="table"></div>
@@ -207,14 +199,6 @@
 
     <!-- PLAYERS -->
     <section id="players" class="view">
-      <div class="card">
-        <h2>Buscar jogador</h2>
-        <div class="row">
-          <input id="player-search" placeholder="Digite para buscar…"/>
-          <button id="player-search-btn" class="btn">Buscar</button>
-        </div>
-      </div>
-
       <div class="grid-2">
         <div class="card">
           <h2>Grupo A</h2>
@@ -228,9 +212,7 @@
 
       <div class="card">
         <h2>Detalhes do Jogador</h2>
-        <div class="row">
-          <select id="player-select"></select>
-        </div>
+        <p class="muted" id="players-hint">Clique em um jogador da lista acima para ver os detalhes.</p>
         <div id="player-details" class="player-details"></div>
       </div>
 
@@ -303,8 +285,6 @@
               <select id="bet-match" required>
                 <option value="">— selecione —</option>
               </select>
-            </div>
-            <div class="row">
               <label>Palpite</label>
               <select id="bet-pick" required>
                 <option value="">— selecione —</option>
@@ -351,9 +331,6 @@
           <div class="row">
             <label>Mensagem</label>
             <input id="chat-text" placeholder="Escreva aqui..." maxlength="500"/>
-          </div>
-          <div class="row end">
-            <button class="btn" type="submit">Enviar</button>
           </div>
         </form>
         <p id="chat-login-hint" class="muted hidden">Entre para participar do chat.</p>
@@ -418,7 +395,6 @@
         </div>
       </div>
 
-      <!-- IMPORTANTE: ID diferente para não colidir com #admin-matches da aba Partidas -->
       <div id="admin-matches-admin" class="card admin-only hidden" style="margin-top:16px;">
         <h3>Gerenciar Partidas (atalho)</h3>
         <p class="muted">Use a aba <b>Partidas</b> para editar/gerenciar. Este bloco é apenas informativo.</p>
