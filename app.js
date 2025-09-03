@@ -1,4 +1,4 @@
-// app.js (completo corrigido)
+// app.js (completo atualizado)
 // Firebase v12 (modules)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-app.js";
 import {
@@ -65,8 +65,8 @@ const ADMIN_EMAILS = [
 ];
 
 // Apostas
-const BET_COST   = 1; // debita 1 ponto ao apostar
-const BET_REWARD = 2; // paga +2 se acertar
+const BET_COST   = 2; // debita 2 pontos por aposta
+const MIN_SEED_POINTS = 6;
 
 /* ==================== Estado ==================== */
 const state = {
@@ -138,10 +138,10 @@ async function ensureAdminBootstrap(user){
 function applyAdminUI(){
   // mostra/esconde tudo com .admin-only
   $$(".admin-only").forEach(el => el.classList.toggle("hidden", !state.admin));
-  // re-render que depende de admin
-  updateAuthUI();   // chip/botões
+  updateAuthUI();
   renderMatches();  // botões "Editar"
   renderPosts();    // botões "Apagar"
+  ensureAdminToolsButtons(); // injeta botões de publicação manual
 }
 
 function listenAdmin(user){
@@ -166,7 +166,6 @@ function listenAdmin(user){
   state.listeners.admin = onSnapshot(adminsRef, (snap)=>{
     refreshBy(snap.exists() ? snap.data() : null);
   }, async (_err)=>{
-    // Se falhar em ler (regras), ainda tenta via custom claim e email fixo
     const tk = await user.getIdTokenResult(true).catch(()=>({claims:{}}));
     const byClaim = !!tk.claims?.admin;
     state.admin = ADMIN_EMAILS.includes(user.email) || byClaim;
@@ -213,11 +212,11 @@ async function ensureWalletInit(uid){
     await runTransaction(db, async (tx)=>{
       const snap = await tx.get(refWal);
       if(!snap.exists()){
-        tx.set(refWal, { points: 6, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+        tx.set(refWal, { points: MIN_SEED_POINTS, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
       }else{
         const cur = snap.data() || {};
         const curPts = typeof cur.points==="number" ? cur.points : 0;
-        const newPts = Math.max(curPts, 6);
+        const newPts = Math.max(curPts, MIN_SEED_POINTS);
         if(newPts !== curPts){
           tx.update(refWal, { points: newPts, updatedAt: serverTimestamp() });
         }
@@ -225,7 +224,7 @@ async function ensureWalletInit(uid){
     });
   }catch(e){
     try{
-      await setDoc(refWal, { points: 6, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }, { merge:true });
+      await setDoc(refWal, { points: MIN_SEED_POINTS, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }, { merge:true });
     }catch(err){ console.error("ensureWalletInit fallback:", err); }
   }
 }
@@ -238,7 +237,7 @@ function listenWallet(uid){
   }
   state.listeners.wallet = onSnapshot(doc(db,"wallets",uid),(snap)=>{
     const pts = (snap.exists() && typeof snap.data().points==="number") ? snap.data().points : 0;
-    state.wallet = Math.max(pts, 6);
+    state.wallet = Math.max(pts, MIN_SEED_POINTS);
     $("#wallet-points") && ($("#wallet-points").textContent = String(state.wallet));
   });
 }
@@ -273,7 +272,7 @@ function initChat(){
           await remove(rtdbRef(rtdb, `chat/${id}`));
         }catch(err){
           console.error(err);
-          alert("Sem permissão para apagar no RTDB. Dica: crie custom claim {admin:true} OU ajuste as RTDB Rules para permitir admin por UID/coleção.");
+          alert("Sem permissão para apagar no RTDB. Ajuste suas RTDB Rules ou use custom claim {admin:true}.");
         }
       });
     }
@@ -312,7 +311,7 @@ function listenPlayers(){
   });
 }
 function renderPlayers(){
-  // esconder busca e select (pedido)
+  // esconder busca e select (pedido anterior)
   $("#player-search")?.closest(".card")?.classList.add("hidden");
   $("#player-select")?.closest(".row")?.classList.add("hidden");
 
@@ -497,6 +496,18 @@ function probVED(m){
   };
 }
 
+// odds/payout a partir da probabilidade (menos provável paga mais)
+function payoutForPick(m, pick){
+  const p = probVED(m);
+  const probPct = pick==="A" ? p.A : pick==="B" ? p.D : p.E;
+  let pr = probPct/100;
+  if(pr <= 0) pr = 0.01;
+  // decimal odds com leve "house edge" e caps
+  const dec = Math.max(1.5, Math.min(5.0, 0.9*(1/pr)));
+  const payout = Math.max(2, Math.round(BET_COST * dec)); // pontos creditados se vencer
+  return { probPct, payout };
+}
+
 function listenMatches(){
   if(state.listeners.matches) state.listeners.matches();
   state.listeners.matches = onSnapshot(query(collection(db,"matches"), orderBy("date","asc")), (qs)=>{
@@ -505,8 +516,10 @@ function listenMatches(){
     renderTables();
     renderBetsSelect();
     renderHome();
-    autoCreatePostsForFinished();
-    autoPostponeOverdue();
+    // >>> NÃO GERAR POSTS AUTOMÁTICOS AQUI <<<
+    // autoCreatePostsForFinished();
+    // autoPostponeOverdue();
+    // Semis automáticas ok manter (não são "posts")
     autoCreateSemisIfDone();
     settleBetsIfFinished();
   });
@@ -623,9 +636,7 @@ function bindMatchForm(){
         await addDoc(collection(db,"matches"), { ...payload, createdAt: serverTimestamp() });
       }else{
         await updateDoc(doc(db,"matches",id), { ...payload, updatedAt: serverTimestamp() });
-        if(result && ["A","B","draw"].includes(result)){
-          await ensurePostForMatch(id);
-        }
+        // >>> NÃO gera post automático aqui (manual via botão)
       }
       form.reset();
       $("#match-id").value="";
@@ -716,7 +727,7 @@ function renderHome(){
     </table>
     <div class="home-next-extra">
       <p><b>Como funciona:</b> exibimos até <b>4 partidas</b> do dia atual; se não houver, mostramos as do próximo dia agendado.</p>
-      <p>Edite datas e resultados na aba <b>Partidas</b>. Resultados confirmados geram comunicados na aba <b>Post</b>.</p>
+      <p>Edite datas e resultados na aba <b>Partidas</b>. Resultados confirmados podem gerar comunicados (botões na aba <b>Admin</b>).</p>
       <p>Na <b>Tabela</b>, a pontuação é válida somente para a <b>Fase de Grupos</b> (Vitória 3 · Empate 1 · Derrota 0).</p>
     </div>
   `;
@@ -832,7 +843,7 @@ function renderBets(){
       <td>${name}</td>
       <td>${etapa}</td>
       <td>${b.pick==="A"?"Vitória A": b.pick==="B"?"Vitória B":"Empate"}</td>
-      <td>${b.status||"pendente"}</td>
+      <td>${b.status||"pendente"}${b.payoutPoints?` · <span class="muted">payout: ${b.payoutPoints}</span>`:""}</td>
     </tr>`;
   }).join("");
 }
@@ -845,16 +856,25 @@ function bindBetForm(){
       const pick = $("#bet-pick").value;
       if(!matchId || !pick) return;
 
+      const match = state.matches.find(m=>m.id===matchId);
+      if(!match) return alert("Partida inválida.");
+
+      // congela payout baseado no estado atual
+      const { probPct, payout } = payoutForPick(match, pick);
+
       await runTransaction(db, async (tx)=>{
         const walRef = doc(db,"wallets",state.user.uid);
         const walSnap = await tx.get(walRef);
         const curPts = walSnap.exists() && typeof walSnap.data().points==="number"
-          ? walSnap.data().points : 6;
+          ? walSnap.data().points : MIN_SEED_POINTS;
         if(curPts < BET_COST) throw new Error("Saldo insuficiente para apostar.");
 
         const betRef = doc(collection(db,"bets"));
         tx.set(betRef, {
           uid: state.user.uid, matchId, pick,
+          stake: BET_COST,
+          pickProb: probPct,
+          payoutPoints: payout,
           createdAt: serverTimestamp(), status: "pendente"
         });
         tx.set(walRef, { points: curPts - BET_COST, updatedAt: serverTimestamp() }, { merge:true });
@@ -862,6 +882,7 @@ function bindBetForm(){
 
       alert("Aposta registrada!");
       e.target.reset();
+      // permanece na aba Apostas
     }catch(err){
       console.error("bet add", err);
       alert(err?.message || "Erro ao registrar aposta. Verifique regras/permissões.");
@@ -879,14 +900,15 @@ async function settleBetsIfFinished(){
     const ok = (b.pick==="draw" && m.result==="draw") || (b.pick==="A" && m.result==="A") || (b.pick==="B" && m.result==="B");
     write.update(doc(db,"bets",b.id), { status: ok?"ganhou":"perdeu", settledAt: serverTimestamp() });
     if(ok){
-      write.set(doc(db,"wallets",state.user.uid), { points: Math.max(6, state.wallet) + BET_REWARD, updatedAt: serverTimestamp() }, { merge:true });
+      const credit = Math.max(2, Number.isFinite(b.payoutPoints)? b.payoutPoints : 2);
+      write.set(doc(db,"wallets",state.user.uid), { points: Math.max(MIN_SEED_POINTS, state.wallet) + credit, updatedAt: serverTimestamp() }, { merge:true });
     }
     changed = true;
   }
   if(changed) await write.commit();
 }
 
-/* ===== Semis + Posts automáticos + Adiamento ===== */
+/* ===== Semis + Publicações manuais ===== */
 async function autoCreateSemisIfDone(){
   const groupsDone = ["A","B"].every(g=>{
     const ms = state.matches.filter(m=>m.stage==="groups" && m.group===g);
@@ -916,41 +938,85 @@ async function autoCreateSemisIfDone(){
     createdAt: serverTimestamp()
   });
 }
-async function ensurePostForMatch(matchId){
-  if(state.posts.some(p=> p.matchId===matchId)) return;
-  const m = state.matches.find(x=>x.id===matchId);
-  if(!m || !m.result || m.result==="postponed") return;
+
+// >>> NOVO: criação MANUAL de posts de resultado/empate (sem duplicar)
+async function generateResultPostsForFinished(){
   const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
-  const body = m.result==="draw"
-    ? `Empate entre ${mapP[m.aId]} e ${mapP[m.bId]}.`
-    : `Vitória de ${m.result==="A"?mapP[m.aId]:mapP[m.bId]} contra ${m.result==="A"?mapP[m.bId]:mapP[m.aId]}.`;
-  await addDoc(collection(db,"posts"), { title:"Resultado da partida", body, matchId, createdAt: serverTimestamp() });
-}
-async function autoCreatePostsForFinished(){
+  const existing = {};
+  state.posts.forEach(p=> { if(p.matchId) existing[p.matchId] = true; });
+
+  let created = 0;
   for(const m of state.matches){
-    if(m.result && m.result!=="postponed"){
-      if(!state.posts.some(p=> p.matchId===m.id)){
-        await ensurePostForMatch(m.id);
-      }
-    }
+    if(!m.result || m.result==="postponed") continue; // apenas finalizadas
+    if(existing[m.id]) continue; // já tem comunicado
+    const title = (m.result==="draw")
+      ? `Empate entre ${mapP[m.aId]||"?"} e ${mapP[m.bId]||"?"}`
+      : `Vitória de ${(m.result==="A"?mapP[m.aId]:mapP[m.bId])||"?"} contra ${(m.result==="A"?mapP[m.bId]:mapP[m.aId])||"?"}`;
+    const body = ""; // sem corpo para evitar duplicidade de "Resultado..."
+    await addDoc(collection(db,"posts"), {
+      title,
+      body,
+      matchId: m.id,
+      createdAt: serverTimestamp()
+    });
+    created++;
   }
+  alert(created ? `Publicados ${created} comunicado(s) de resultados.` : "Nenhum comunicado pendente de resultado.");
 }
-async function autoPostponeOverdue(){
-  const now = Date.now();
+
+// >>> NOVO: criação MANUAL de posts de adiamento pendentes (24h após data)
+async function generatePostponedPostsForOverdue(){
+  let created = 0;
   for(const m of state.matches){
     if(m.stage!=="groups") continue;
-    if(m.result) continue;
+    if(m.result) continue;               // só pendentes
     if(!m.date) continue;
     const d = parseLocalDate(m.date);
     if(!d) continue;
-    if(now - d.getTime() >= 24*60*60*1000){
-      await updateDoc(doc(db,"matches",m.id), { result:"postponed", updatedAt: serverTimestamp() });
+    if(Date.now() - d.getTime() < 24*60*60*1000) continue;
+
+    // marca como adiado + cria post (se ainda não houver)
+    await updateDoc(doc(db,"matches",m.id), { result:"postponed", updatedAt: serverTimestamp() });
+    const has = state.posts.some(p=> p.matchId===m.id);
+    if(!has){
       await addDoc(collection(db,"posts"), {
         title: "Partida adiada",
         body: `A partida ${m.code||""} (${m.stage==="groups" ? `F. Grupos${m.group?` ${m.group}`:""}`: stageLabel(m.stage)}) foi adiada por expirar o prazo sem resultado.`,
         matchId: m.id, createdAt: serverTimestamp()
       });
+      created++;
     }
+  }
+  alert(created ? `Publicados ${created} comunicado(s) de adiamento.` : "Nenhum adiamento pendente.");
+}
+
+/* ===== Injeta botões no Admin: publicação manual ===== */
+function ensureAdminToolsButtons(){
+  if(!state.admin) return;
+  // tenta achar o card "Ferramentas" na aba Admin
+  const adminView = $("#admin");
+  if(!adminView) return;
+  const toolsCard = Array.from(adminView.querySelectorAll(".card"))
+    .find(c => /Ferramentas/i.test(c.textContent || ""));
+  if(!toolsCard) return;
+
+  if(!toolsCard.querySelector("#btn-publish-results")){
+    const btn = document.createElement("button");
+    btn.id = "btn-publish-results";
+    btn.className = "btn";
+    btn.style.marginRight = "8px";
+    btn.textContent = "Publicar resultados (pendentes)";
+    btn.addEventListener("click", generateResultPostsForFinished);
+    toolsCard.querySelector("h2")?.after(btn);
+  }
+  if(!toolsCard.querySelector("#btn-publish-postponed")){
+    const btn2 = document.createElement("button");
+    btn2.id = "btn-publish-postponed";
+    btn2.className = "btn ghost";
+    btn2.style.marginRight = "8px";
+    btn2.textContent = "Publicar adiamentos (pendentes)";
+    btn2.addEventListener("click", generatePostponedPostsForOverdue);
+    toolsCard.querySelector("#btn-publish-results")?.after(btn2);
   }
 }
 
