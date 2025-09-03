@@ -1,4 +1,4 @@
-// app.js (completo)
+// app.js (completo corrigido)
 // Firebase v12 (modules)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-app.js";
 import {
@@ -12,10 +12,10 @@ import {
   getDatabase, ref as rtdbRef, push, onChildAdded, onChildRemoved, remove
 } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-database.js";
 
-// ===== Helpers DOM
-const $ = sel => document.querySelector(sel);
+/* ==================== Helpers DOM ==================== */
+const $  = sel => document.querySelector(sel);
 const $$ = sel => Array.from(document.querySelectorAll(sel));
-const fmt2 = n => n < 10 ? `0${n}` : `${n}`;
+const fmt2 = n => (n < 10 ? `0${n}` : `${n}`);
 
 function parseLocalDate(input){
   if(!input) return null;
@@ -44,7 +44,7 @@ function fmtTime(val){
 const clamp01 = x => Math.max(0, Math.min(1, x));
 const clampPct = x => Math.max(0, Math.min(100, x));
 
-// ===== Firebase config
+/* ==================== Config ==================== */
 const firebaseConfig = {
   apiKey: "AIzaSyCP3RH4aR-sSbB7CeZV6c6cpj9fC4HjhCw",
   authDomain: "championschessifma.firebaseapp.com",
@@ -56,16 +56,19 @@ const firebaseConfig = {
 };
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
-const db = getFirestore(app);
+const db   = getFirestore(app);
 const rtdb = getDatabase(app);
 
-// ===== Admin config
+// Admins fixos (opcional)
 const ADMIN_EMAILS = [
-  // >>> Coloque aqui seus e-mails admin fixos, se quiser:
-  // "voce@ifma.edu.br",
+  // "seu.email@ifma.edu.br",
 ];
 
-// ===== Estado
+// Apostas
+const BET_COST   = 1; // debita 1 ponto ao apostar
+const BET_REWARD = 2; // paga +2 se acertar
+
+/* ==================== Estado ==================== */
 const state = {
   user: null,
   admin: false,
@@ -77,7 +80,7 @@ const state = {
   listeners: { players:null, matches:null, posts:null, bets:null, wallet:null, chat:null, admin:null },
 };
 
-// ===== Abas
+/* ==================== Abas ==================== */
 function showTab(tab){
   $$(".view").forEach(v=>v.classList.remove("visible"));
   $$(".tab").forEach(b=>b.classList.remove("active"));
@@ -87,12 +90,11 @@ function showTab(tab){
   if(btn) btn.classList.add("active");
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
-
 function initTabs(){
   $$(".tab").forEach(btn=>{
     btn.addEventListener("click", ()=> showTab(btn.dataset.tab));
   });
-  // abrir aba via âncora #aba
+  // links internos #id
   document.querySelectorAll('a[href^="#"]').forEach(a=>{
     a.addEventListener("click", (e)=>{
       const id = a.getAttribute("href").slice(1);
@@ -102,11 +104,11 @@ function initTabs(){
       }
     });
   });
-  // chip do usuário abre PERFIL
+  // chip abre PERFIL
   $("#user-chip")?.addEventListener("click", ()=> showTab("perfil"));
 }
 
-// ===== Auth
+/* ==================== Auth ==================== */
 async function loginGoogle(){
   const provider = new GoogleAuthProvider();
   await signInWithPopup(auth, provider);
@@ -115,31 +117,60 @@ async function logout(){
   await signOut(auth);
 }
 
+// Se a coleção admins estiver vazia, transforma o 1º usuário logado em admin (active+isAdmin)
 async function ensureAdminBootstrap(user){
   if(!user) return;
   try{
     const qs = await getDocs(collection(db,"admins"));
     if(qs.empty){
-      await setDoc(doc(db,"admins", user.uid), { isAdmin:true, bootstrap:true, createdAt: serverTimestamp() }, { merge:true });
+      await setDoc(doc(db,"admins", user.uid), {
+        isAdmin: true,
+        active : true,
+        bootstrap: true,
+        email: user.email || null,
+        name : user.displayName || null,
+        createdAt: serverTimestamp()
+      }, { merge:true });
     }
   }catch(e){ console.warn("ensureAdminBootstrap:", e); }
+}
+
+function applyAdminUI(){
+  // mostra/esconde tudo com .admin-only
+  $$(".admin-only").forEach(el => el.classList.toggle("hidden", !state.admin));
+  // re-render que depende de admin
+  updateAuthUI();   // chip/botões
+  renderMatches();  // botões "Editar"
+  renderPosts();    // botões "Apagar"
 }
 
 function listenAdmin(user){
   if(state.listeners.admin) state.listeners.admin();
   if(!user){
-    state.admin=false; updateAuthUI(); return;
+    state.admin=false; applyAdminUI(); return;
   }
   const adminsRef = doc(db,"admins", user.uid);
-  state.listeners.admin = onSnapshot(adminsRef, (snap)=>{
+
+  const refreshBy = async (docData) => {
     const byList = ADMIN_EMAILS.includes(user.email);
-    const byDoc  = snap.exists() && snap.data()?.isAdmin === true;
-    state.admin = !!(byList || byDoc);
-    updateAuthUI();
-  }, (err)=>{
-    console.warn("listenAdmin err:", err);
-    state.admin = ADMIN_EMAILS.includes(user.email);
-    updateAuthUI();
+    const byDoc  = !!(docData && (docData.active === true || docData.isAdmin === true));
+    let byClaim  = false;
+    try {
+      const tk = await user.getIdTokenResult(true);
+      byClaim = !!tk.claims?.admin;
+    } catch(_) {}
+    state.admin = !!(byList || byDoc || byClaim);
+    applyAdminUI();
+  };
+
+  state.listeners.admin = onSnapshot(adminsRef, (snap)=>{
+    refreshBy(snap.exists() ? snap.data() : null);
+  }, async (_err)=>{
+    // Se falhar em ler (regras), ainda tenta via custom claim e email fixo
+    const tk = await user.getIdTokenResult(true).catch(()=>({claims:{}}));
+    const byClaim = !!tk.claims?.admin;
+    state.admin = ADMIN_EMAILS.includes(user.email) || byClaim;
+    applyAdminUI();
   });
 }
 
@@ -174,7 +205,7 @@ function updateAuthUI(){
   }
 }
 
-// ===== Carteira / Wallet
+/* ==================== Carteira ==================== */
 async function ensureWalletInit(uid){
   if(!uid) return;
   const refWal = doc(db, "wallets", uid);
@@ -193,7 +224,6 @@ async function ensureWalletInit(uid){
       }
     });
   }catch(e){
-    // fallback
     try{
       await setDoc(refWal, { points: 6, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }, { merge:true });
     }catch(err){ console.error("ensureWalletInit fallback:", err); }
@@ -213,7 +243,7 @@ function listenWallet(uid){
   });
 }
 
-// ===== Chat (Realtime Database)
+/* ==================== Chat (RTDB) ==================== */
 function initChat(){
   if(state.listeners.chat) return; // único
   const list = $("#chat-list");
@@ -239,7 +269,12 @@ function initChat(){
     if(canDel){
       el.querySelector(".btn-del-chat")?.addEventListener("click", async ()=>{
         if(!confirm("Apagar esta mensagem do chat?")) return;
-        await remove(rtdbRef(rtdb, `chat/${id}`));
+        try{
+          await remove(rtdbRef(rtdb, `chat/${id}`));
+        }catch(err){
+          console.error(err);
+          alert("Sem permissão para apagar no RTDB. Dica: crie custom claim {admin:true} OU ajuste as RTDB Rules para permitir admin por UID/coleção.");
+        }
       });
     }
   };
@@ -264,7 +299,7 @@ function initChat(){
   $("#chat-login-hint")?.classList.toggle("hidden", !!state.user);
 }
 
-// ===== Players
+/* ==================== Players ==================== */
 function listenPlayers(){
   if(state.listeners.players) state.listeners.players();
   state.listeners.players = onSnapshot(query(collection(db,"players"), orderBy("name","asc")), (qs)=>{
@@ -276,9 +311,8 @@ function listenPlayers(){
     renderHome();
   });
 }
-
 function renderPlayers(){
-  // Esconde "Buscar jogador" e o select de detalhes (pedido)
+  // esconder busca e select (pedido)
   $("#player-search")?.closest(".card")?.classList.add("hidden");
   $("#player-select")?.closest(".row")?.classList.add("hidden");
 
@@ -302,7 +336,6 @@ function renderPlayers(){
     };
   });
 }
-
 function renderPlayerSelects(){
   // Para formulários (partidas/semis)
   const sA = $("#match-a"), sB = $("#match-b");
@@ -381,7 +414,6 @@ function buildPlayerProfileHTML(p){
     </div>
   `;
 }
-
 function renderPlayerDetails(playerId){
   const p = state.players.find(x=>x.id===playerId);
   if(!p){ $("#player-details") && ($("#player-details").innerHTML = "<p class='muted'>Selecione um jogador.</p>"); return; }
@@ -405,7 +437,7 @@ function renderPlayerDetails(playerId){
   });
 }
 
-// ===== Standings
+/* ==================== Standings ==================== */
 function renderTables(){
   ["A","B"].forEach(g=>{
     const rows = state.players.filter(p=>p.group===g).map(p=>{
@@ -428,7 +460,7 @@ function renderTables(){
   });
 }
 
-// ===== Partidas
+/* ==================== Partidas ==================== */
 function stageLabel(s){
   if(s==="semifinal") return "Semifinal";
   if(s==="final") return "Final";
@@ -436,37 +468,6 @@ function stageLabel(s){
   if(s==="groups") return "F. Grupos";
   return s||"—";
 }
-
-function probForMatch(m){
-  const sA = computePlayerStats(m.aId);
-  const sB = computePlayerStats(m.bId);
-  const wpA = (sA.wins + 1) / ((sA.wins + sA.losses) + 2);
-  const wpB = (sB.wins + 1) / ((sB.wins + sB.losses) + 2);
-  let baseA = wpA / (wpA + wpB);
-  let baseB = 1 - baseA;
-  let baseD = 0.15;
-
-  const bets = state.bets.filter(b=> b.matchId===m.id);
-  const tot = bets.length || 1;
-  const shareA = bets.filter(b=>b.pick==="A").length / tot;
-  const shareB = bets.filter(b=>b.pick==="B").length / tot;
-  const shareD = bets.filter(b=>b.pick==="draw").length / tot;
-
-  let pA = clamp01(0.55*baseA + 0.45*shareA);
-  let pB = clamp01(0.55*baseB + 0.45*shareB);
-  let pD = clamp01(0.30*baseD + 0.70*shareD*0.7);
-
-  const s = pA + pB + pD || 1;
-  pA/=s; pB/=s; pD/=s;
-
-  return {
-    // A = vitória do Jogador A; E = empate; D = vitória do Jogador B (derrota de A)
-    A: Math.round(clampPct(pA*100)),
-    E: Math.round(clampPct(pD*0 + pD*0 + (pD,pA,pB) && pD ? (pD && (pD,pA,pB)) : (pD*0) + (1-pA-pB)*100 )), // (só para garantir clamp; substituído logo abaixo)
-    D: Math.round(clampPct(pB*100))
-  };
-}
-// Corrige E (acima só placeholder para não quebrar IDE); manter claro:
 function probVED(m){
   const sA = computePlayerStats(m.aId);
   const sB = computePlayerStats(m.bId);
@@ -531,8 +532,6 @@ function renderMatches(){
     const p = probVED(m);
     const aName = mapP[m.aId]||"?";
     const bName = mapP[m.bId]||"?";
-    // A: V/E/D = p.A / p.E / p.D
-    // B: V/E/D = p.D / p.E / p.A
     const lineA = `V ${p.A}% • E ${p.E}% • D ${p.D}%`;
     const lineB = `V ${p.D}% • E ${p.E}% • D ${p.A}%`;
     return `
@@ -681,7 +680,7 @@ function loadMatchToForm(id){
   $("#admin-matches")?.scrollIntoView({ behavior:"smooth", block:"start" });
 }
 
-// ===== Home
+/* ==================== Home ==================== */
 function renderHome(){
   const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
   const scheduled=state.matches.filter(m=>!!m.date).slice().sort((a,b)=>parseLocalDate(a.date)-parseLocalDate(b.date));
@@ -723,7 +722,7 @@ function renderHome(){
   `;
   $("#home-next") && ($("#home-next").innerHTML=table);
 
-  // CTA "Lista de players" leva de verdade à aba players
+  // CTA "Lista de players" leva à aba players
   document.querySelectorAll('a[href="#players"]').forEach(a=>{
     a.addEventListener("click", (e)=>{ e.preventDefault(); showTab("players"); });
   });
@@ -738,7 +737,7 @@ function renderHome(){
   }
 }
 
-// ===== Posts
+/* ==================== Posts ==================== */
 function listenPosts(){
   if(state.listeners.posts) state.listeners.posts();
   state.listeners.posts = onSnapshot(query(collection(db,"posts"), orderBy("createdAt","desc")), (qs)=>{
@@ -784,19 +783,23 @@ function bindPostForm(){
       });
       e.target.reset();
     }catch(err){
-      console.error("post add", err); alert("Erro ao publicar post.");
+      console.error("post add", err); alert("Erro ao publicar post (permissão?).");
     }
   });
 }
 
-// ===== Bets
+/* ==================== Apostas ==================== */
 function listenBets(){
   if(state.listeners.bets) state.listeners.bets();
   if(!state.user){ state.bets=[]; renderBets(); return; }
-  state.listeners.bets = onSnapshot(query(collection(db,"bets"), where("uid","==",state.user.uid), orderBy("createdAt","desc")), (qs)=>{
-    state.bets = qs.docs.map(d=>({id:d.id, ...d.data()}));
-    renderBets(); renderMatches();
-  }, (err)=> console.error("listenBets", err));
+  state.listeners.bets = onSnapshot(
+    query(collection(db,"bets"), where("uid","==",state.user.uid), orderBy("createdAt","desc")),
+    (qs)=>{
+      state.bets = qs.docs.map(d=>({id:d.id, ...d.data()}));
+      renderBets(); renderMatches();
+    },
+    (err)=> console.error("listenBets", err)
+  );
 }
 function renderBetsSelect(){
   const sel = $("#bet-match");
@@ -810,7 +813,6 @@ function renderBetsSelect(){
     const pn = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
     return `<option value="${m.id}">${pn[m.aId]||"?"} × ${pn[m.bId]||"?"} — ${stageLabel(m.stage)}${m.group?` ${m.group}`:""}</option>`;
   }).join("");
-  // garantir mesma largura visual (CSS já cobre 1fr/1fr)
   $("#bet-pick")?.style.setProperty("width","100%");
   $("#bet-match")?.style.setProperty("width","100%");
 }
@@ -842,16 +844,27 @@ function bindBetForm(){
       const matchId = $("#bet-match").value;
       const pick = $("#bet-pick").value;
       if(!matchId || !pick) return;
-      // não muda aba, apenas grava
-      await addDoc(collection(db,"bets"), {
-        uid: state.user.uid, matchId, pick,
-        createdAt: serverTimestamp(), status: "pendente"
+
+      await runTransaction(db, async (tx)=>{
+        const walRef = doc(db,"wallets",state.user.uid);
+        const walSnap = await tx.get(walRef);
+        const curPts = walSnap.exists() && typeof walSnap.data().points==="number"
+          ? walSnap.data().points : 6;
+        if(curPts < BET_COST) throw new Error("Saldo insuficiente para apostar.");
+
+        const betRef = doc(collection(db,"bets"));
+        tx.set(betRef, {
+          uid: state.user.uid, matchId, pick,
+          createdAt: serverTimestamp(), status: "pendente"
+        });
+        tx.set(walRef, { points: curPts - BET_COST, updatedAt: serverTimestamp() }, { merge:true });
       });
+
       alert("Aposta registrada!");
       e.target.reset();
     }catch(err){
       console.error("bet add", err);
-      alert("Erro ao registrar aposta. Verifique regras/permissões.");
+      alert(err?.message || "Erro ao registrar aposta. Verifique regras/permissões.");
     }
   });
 }
@@ -866,14 +879,14 @@ async function settleBetsIfFinished(){
     const ok = (b.pick==="draw" && m.result==="draw") || (b.pick==="A" && m.result==="A") || (b.pick==="B" && m.result==="B");
     write.update(doc(db,"bets",b.id), { status: ok?"ganhou":"perdeu", settledAt: serverTimestamp() });
     if(ok){
-      write.set(doc(db,"wallets",state.user.uid), { points: Math.max(6, state.wallet) + 2, updatedAt: serverTimestamp() }, { merge:true });
+      write.set(doc(db,"wallets",state.user.uid), { points: Math.max(6, state.wallet) + BET_REWARD, updatedAt: serverTimestamp() }, { merge:true });
     }
     changed = true;
   }
   if(changed) await write.commit();
 }
 
-// ===== Semifinais auto + posts automáticos + adiamento
+/* ===== Semis + Posts automáticos + Adiamento ===== */
 async function autoCreateSemisIfDone(){
   const groupsDone = ["A","B"].every(g=>{
     const ms = state.matches.filter(m=>m.stage==="groups" && m.group===g);
@@ -941,7 +954,7 @@ async function autoPostponeOverdue(){
   }
 }
 
-// ===== Admin: Seed + Players form
+/* ==================== Admin: Seed / Players / Semis ==================== */
 function bindSeed(){
   $("#seed-btn")?.addEventListener("click", async ()=>{
     if(!confirm("Criar seed de exemplo (jogadores + partidas de grupos)?")) return;
@@ -1020,7 +1033,7 @@ function bindPlayerForm(){
   });
 }
 
-// ===== Perfil do usuário
+/* ==================== Perfil do usuário ==================== */
 function bindProfileForm(){
   $("#profile-form")?.addEventListener("submit", async (e)=>{
     e.preventDefault(); e.stopPropagation();
@@ -1048,7 +1061,7 @@ function fillProfile(){
   $("#profile-username") && ($("#profile-username").textContent = state.user.uid.slice(0,6));
 }
 
-// ===== Admin: criar semis manualmente
+/* ==================== Semis (manual) ==================== */
 function bindSemis(){
   $("#semi-autofill")?.addEventListener("click", autoCreateSemisIfDone);
   $("#semi-save")?.addEventListener("click", async ()=>{
@@ -1062,7 +1075,7 @@ function bindSemis(){
   });
 }
 
-// ===== Auth listeners
+/* ==================== Auth listeners ==================== */
 function bindAuthButtons(){
   $("#btn-open-login")?.addEventListener("click", loginGoogle);
   $("#btn-logout")?.addEventListener("click", logout);
@@ -1079,7 +1092,7 @@ onAuthStateChanged(auth, async (user)=>{
   if(user) await ensureWalletInit(user.uid);
 });
 
-// ===== Inicialização principal
+/* ==================== Init ==================== */
 function init(){
   bindAuthButtons();
   initTabs();
