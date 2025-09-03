@@ -16,24 +16,19 @@ body{
   padding-top:0 !important; /* garante sem espaço acima da navbar */
 }
 
-/* Header (se usar) */
-.site-header{
-  display:flex;align-items:center;justify-content:space-between;
-  padding:16px 20px;background:var(--elev);border-bottom:1px solid #1f2630;
-  position:static; top:auto; z-index:1; /* NÃO fixa */
-}
-.brand{display:flex;gap:12px;align-items:center}
-.logo{width:48px;height:48px;border-radius:50%;object-fit:cover;box-shadow:var(--shadow)}
-h1{font-size:20px;margin:0}
-.subtitle{margin:2px 0 0;color:var(--muted);font-size:12px}
-.accent{color:var(--accent)}
-.auth{display:flex;align-items:center;gap:8px}
-
 /* NAVBAR (topbar) — NÃO fixa */
 .tabs{
   display:flex;gap:8px;padding:10px 12px;background:#0e141b;overflow:auto;border-bottom:1px solid #1f2630
 }
-.tabs.topbar{margin:0; position:static !important; top:auto !important; justify-content:space-between;}
+.tabs.topbar{
+  margin:0; position:static; top:auto; justify-content:space-between; align-items:center;
+}
+.topbar .nav-left, .topbar .nav-center, .topbar .nav-right{
+  display:flex; align-items:center; gap:8px;
+}
+.topbar .nav-center{ flex:1; justify-content:center; gap:8px; }
+.logo{width:48px;height:48px;border-radius:50%;object-fit:cover;box-shadow:var(--shadow)}
+.logo--small{ width:36px; height:36px; }
 .tab{
   background:#111821;color:var(--text);border:1px solid #1f2630;
   padding:10px 14px;border-radius:999px;cursor:pointer;white-space:nowrap
@@ -135,52 +130,8 @@ h1{font-size:20px;margin:0}
 /* Se houver cards aninhados em partidas (lista renderizada) */
 #matches-list .card { margin-bottom: 22px; }
 
-/* Campo de pesquisa estilizado */
-#player-search{
-  border-radius: 999px;
-  padding: 12px 14px;
-  border: 1px solid #274057;
-  background: #0c1420;
-  color: var(--text);
-  transition: box-shadow .15s, border-color .15s;
-}
-#player-search::placeholder{ color: #6e8197; }
-#player-search:focus{
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(43,182,115,.25);
-}
-
-/* Botão de buscar aprimorado */
-#player-search-btn{
-  border-radius: 999px;
-  padding: 12px 16px;
-  font-weight: 800;
-}
-#player-search-btn::before{ content: "🔎 "; }
-
-/* Select “Selecionar Jogador” com texto preto e fundo claro (legível) */
-#player-select{
-  appearance: none;
-  border-radius: 12px;
-  padding: 12px 14px;
-  border: 1px solid #cbd5e1;
-  background: #ffffff;
-  color: #000000;
-  font-weight: 700;
-  transition: box-shadow .15s, border-color .15s;
-}
-#player-select:focus{
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(43,182,115,.25);
-}
-#player-select option { color:#000000; background:#ffffff; }
-
-/* Distância entre a lista de jogadores e a caixa de detalhes */
-#players .grid-2 { margin-bottom: 36px; }
-
 /* Caixa de detalhes do player com mais respiro */
+#players .grid-2 { margin-bottom: 36px; }
 #player-details {
   margin-top: 10px;
   padding: 18px 20px;
@@ -189,11 +140,12 @@ h1{font-size:20px;margin:0}
   background: #10161e;
 }
 
-/* Home: Próximos confrontos compacto e SEM probabilidade */
+/* Home: Próximas partidas compacto e SEM probabilidade */
 #home .grid-2 { gap: 20px; }
 #home-next table { font-size:12px; line-height:1.2; }
 #home-next th, #home-next td { padding:6px 8px; white-space:nowrap; }
-#home .prob-pill { display:none !important; }  /* esconde as probabilidades só na HOME */
+/* Garante que não sobra espaço vazio: o card expande com conteúdo adicional */
+#home .home-next-extra{ margin-top:8px; color:var(--muted); font-size:12px; line-height:1.4; }
 
 /* Perfil do jogador — layout mais bonito */
 .profile-hero { display:flex; gap:16px; align-items:center; }
@@ -206,59 +158,37 @@ h1{font-size:20px;margin:0}
 .profile-stats { display:flex; flex-wrap:wrap; gap:8px; margin-top:6px; }
 .stat { background:#10161e; border:1px solid #1f2630; border-radius:10px; padding:8px 10px; font-size:13px; }
 
-/* Partidas: tabela mais limpa e intuitiva */
-#matches-list .table table{ font-size:13px; }
-#matches-list .table tbody tr:nth-child(odd){ background:#0f141d; }
-#matches-list .table tbody tr:hover{ background:#10161e; }
-/* ===== NAVBAR NÃO FIXA (garantia) ===== */
-.tabs.topbar{ position: static !important; top: auto !important; }
-
-/* ===== Partidas: Tabela limpa, colunas alinhadas ===== */
+/* ===== Partidas: Tabela limpa, linhas/colunas alinhadas ===== */
 #matches-list .table table{
   width: 100%;
-  border-collapse: collapse;     /* sem gaps */
-  table-layout: auto;            /* largura flui; se quiser fixar, troque pra fixed */
+  border-collapse: collapse;
+  table-layout: auto;
+  font-size:13px;
 }
 #matches-list th, #matches-list td{
   padding: 10px 12px;
   border-bottom: 1px solid #243041;
   text-align: left;
-  vertical-align: middle;        /* alinha verticalmente no centro */
+  vertical-align: middle;
   white-space: normal;
 }
-
-/* Zebra leve e hover */
 #matches-list .table tbody tr:nth-child(odd){ background:#0f141d; }
 #matches-list .table tbody tr:hover{ background:#10161e; }
 
-/* Chips SEM mexer no display do TD (evita torto) */
+/* Chips (sem quebrar o layout) */
 .chip{ display:inline-block; padding:6px 10px; border-radius:999px; }
 .chip--stage{ background:#10202a; border:1px solid #1f3631; color:#cde6d7; }
 .chip--code { background:#0f1520; border:1px solid #263044; color:#cfe2ff; }
 .chip--res  { background:#10161e; border:1px solid #1f2630; color:#cde6d7; }
 
-/* Larguras mínimas organizadas */
-#matches-list table th:nth-child(1){ min-width: 140px; } /* Etapa/Grupo */
+/* Larguras mínimas organizadas (Partidas) */
+#matches-list table th:nth-child(1){ min-width: 110px; } /* Etapa/Grupo */
 #matches-list table th:nth-child(3){ min-width: 120px; } /* Data/Hora */
+#matches-list table th:nth-child(4){ min-width: 160px; } /* Prob. */
 #matches-list table th:nth-child(5){ min-width: 80px; }  /* Código */
 #matches-list table th:nth-child(6){ min-width: 100px; } /* Resultado */
 
-/* ===== Posts: mais respiro lateral na faixa zebrada ===== */
-.posts .post > div{ padding: 0 14px; }
-
-/* ===== Home: Próximas partidas sem coluna de probabilidade ===== */
-#home-next table{ font-size:12px; line-height:1.2; }
-#home-next th, #home-next td{ padding:6px 8px; white-space:nowrap; }
-/* Garante que não sobra espaço vazio: o card expande com conteúdo adicional */
-#home .home-next-extra{ margin-top:8px; color:var(--muted); font-size:12px; line-height:1.4; }
-
-/* colunas com largura mínima organizada */
-#matches-list table th:nth-child(1){ min-width: 110px; }
-#matches-list table th:nth-child(3){ min-width: 120px; }
-#matches-list table th:nth-child(4){ min-width: 160px; }
-#matches-list table th:nth-child(5){ min-width: 80px; }
-#matches-list table th:nth-child(6){ min-width: 100px; }
-
-/* Apostas: mais espaço entre caixas */
+/* ===== Apostas: mais espaço / selects com mesma largura ===== */
 #apostas .grid-2 { gap: 24px; }
 #apostas .card { margin-bottom: 18px; }
+#bet-form .row select{ width:100%; }
