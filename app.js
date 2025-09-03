@@ -1,185 +1,163 @@
-// app.js — Champions Chess IFMA (build com ajustes solicitados)
-
-/* ========= IMPORTS ========= */
+// app.js
+// Firebase v12 (modules)
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-app.js";
 import {
-  app,
-  auth, db,
-  loginWithGoogle, logout, watchAuth, setDisplayName,
-  collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
-  onSnapshot, query, orderBy, where, serverTimestamp, runTransaction
-} from "./firebase.js";
+  getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut,
+} from "https://www.gstatic.com/firebasejs/12.2.1/firebase-auth.js";
+import {
+  getFirestore, collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc,
+  deleteDoc, onSnapshot, query, where, orderBy, serverTimestamp, runTransaction, writeBatch
+} from "https://www.gstatic.com/firebasejs/12.2.1/firebase-firestore.js";
+import {
+  getDatabase, ref as rtdbRef, push, onChildAdded, onChildRemoved, remove
+} from "https://www.gstatic.com/firebasejs/12.2.1/firebase-database.js";
 
-/* ========= PEQUENOS PATCHES DE LAYOUT ========= */
-// Remover qualquer “folga” que vinha do CSS (navbar não fixa)
-try {
-  document.documentElement.style.setProperty('--topbar-h','0px');
-  document.body.style.paddingTop = '0px';
-} catch {}
+// ===== Helpers DOM
+const $ = sel => document.querySelector(sel);
+const $$ = sel => Array.from(document.querySelectorAll(sel));
+const fmt2 = n => n < 10 ? `0${n}` : `${n}`;
 
-/* ========= HELPERS ========= */
-const $  = s => document.querySelector(s);
-const $$ = s => Array.from(document.querySelectorAll(s));
-const sleep = ms => new Promise(r=>setTimeout(r, ms));
-function confirmAction(msg){ return window.confirm(msg); }
-
-function slugifyName(name){
-  return (name||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"")
-    .toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"").slice(0,20)||"user";
+function fmtLocalDateStr(val){
+  if(!val) return "—";
+  const d = parseLocalDate(val);
+  if(!d) return "—";
+  return `${fmt2(d.getDate())}/${fmt2(d.getMonth()+1)}/${d.getFullYear()} ${fmt2(d.getHours())}:${fmt2(d.getMinutes())}`;
 }
-function shortUid(uid){ return (uid||"").slice(-4)||Math.floor(Math.random()*9999).toString().padStart(4,"0"); }
-
-function stageLabel(s){
-  switch((s||"").toLowerCase()){
-    case "groups": return "F. Grupos";
-    case "semifinal": return "Semifinal";
-    case "final": return "Final";
-    case "third": return "3º Lugar";
-    default: return s||"—";
-  }
+function fmtTime(val){
+  if(!val) return "—";
+  const d = parseLocalDate(val);
+  if(!d) return "—";
+  return `${fmt2(d.getHours())}:${fmt2(d.getMinutes())}`;
 }
-function stageShort(m){
-  if(m.stage==="groups") return `Gr ${m.group||"-"}`;
-  if(m.stage==="semifinal") return "SF";
-  if(m.stage==="final") return "Final";
-  if(m.stage==="third") return "3º";
-  return m.stage||"—";
-}
-
-function parseLocalDate(str){
-  if(!str) return null;
-  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?([Zz]|[+\-]\d{2}:\d{2})?$/.exec(str);
-  if(m){ if(m[7]){ const d=new Date(str); return isNaN(d)?null:d; } return new Date(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+(m[6]||0),0); }
-  const d=new Date(str); return isNaN(d)?null:d;
-}
-const fmtLocalDateStr = s => { const d=parseLocalDate(s); return d?d.toLocaleString("pt-BR"):"—"; };
-const fmtTime = s => { const d=parseLocalDate(s); return d? d.toLocaleTimeString("pt-BR",{hour:'2-digit',minute:'2-digit'}) : "—"; };
-const fmtTS = ts => { try{ const d=ts?.toDate?ts.toDate():(ts instanceof Date?ts:(ts?new Date(ts):null)); return d?d.toLocaleString("pt-BR"):"—"; }catch{ return "—"; } };
-const clamp = (x,min,max)=> Math.max(min, Math.min(max, x));
-
-/* ========= NAV / TABS ========= */
-function showTab(id){
-  if(!id) id = "home";
-  $$(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === id));
-  $$(".view").forEach(v => v.classList.toggle("visible", v.id === id));
-  if(location.hash.replace("#","") !== id && !id.startsWith("player/")) location.hash = id;
-  window.scrollTo({ top: 0, behavior: "auto" });
-}
-window.addEventListener("hashchange", ()=> showTab(location.hash.replace("#","") || "home"));
-$$(".tab").forEach(b => b.addEventListener("click", (e)=>{ e.preventDefault(); showTab(b.dataset.tab); }));
-// botão Perfil na navbar = o CHIP do usuário
-$("#user-chip")?.addEventListener("click", () => showTab("perfil"));
-// fallback se ainda existir botão "perfil" no HTML
-const perfilTabBtn = document.querySelector('.tab[data-tab="perfil"]');
-if(perfilTabBtn) perfilTabBtn.style.display = "none";
-showTab(location.hash.replace("#","") || "home");
-
-// delegação global para “Abrir perfil” de jogador
-document.addEventListener("click", (ev)=>{
-  const btn = ev.target.closest("[data-open-profile]");
-  if(btn){ const id = btn.getAttribute("data-open-profile"); if(id) openPlayerProfile(id); }
-});
-
-/* ========= STATE ========= */
-let state = {
-  user:null, admin:false, profile:null,
-  players:[], matches:[], posts:[], chat:[],
-  bets:[], wallets:[]
-};
-const prevResults = new Map();
-
-/* ========= ADMIN ========= */
-async function refreshAdminStatus(){
-  let ok = false;
-  if(auth.currentUser){
-    try{
-      const tok = await auth.currentUser.getIdTokenResult(true);
-      ok = !!tok.claims?.admin;
-    }catch{}
-    if(!ok){
-      const snap = await getDoc(doc(db,"admins",auth.currentUser.uid));
-      ok = snap.exists() && !!snap.data().active;
-    }
-  }
-  setAdminFlag(ok);
-  return ok;
-}
-function setAdminFlag(flag){
-  const changed = state.admin !== flag;
-  state.admin = flag;
-  $("#admin-badge")?.classList.toggle("hidden", !flag);
-  $("#tab-admin")?.classList.toggle("hidden", !flag);
-  $$(".admin-only").forEach(el => el.classList.toggle("hidden", !flag));
-  if(changed){ renderPosts(); renderChat(); renderMatches(); renderHome(); renderAdminSemisList(); }
-}
-async function requireAdmin(){
-  const ok = await refreshAdminStatus();
-  if(!ok) alert("Ação restrita ao admin.");
-  return ok;
-}
-
-/* ========= AUTH / PERFIL ========= */
-async function loadProfile(uid){
-  if(!uid){ state.profile=null; return renderProfile(); }
-  const snap = await getDoc(doc(db,"profiles",uid));
-  state.profile = snap.exists()?snap.data():null;
-  renderProfile();
-}
-function renderProfile(){
-  if(!state.user){
-    $("#profile-email") && ($("#profile-email").value = "");
-    $("#profile-name") && ($("#profile-name").value = "");
-    $("#profile-username") && ($("#profile-username").textContent = "—");
-    return;
-  }
-  $("#profile-email") && ($("#profile-email").value = state.user.email || "");
-  $("#profile-name") && ($("#profile-name").value = state.profile?.displayName || state.user.displayName || "");
-  $("#profile-username") && ($("#profile-username").textContent = state.profile?.username || "—");
-}
-
-$("#btn-open-login")?.addEventListener("click", async ()=>{ try{ await loginWithGoogle(); }catch(e){ alert("Erro: "+e.message); } });
-$("#btn-logout")?.addEventListener("click", async ()=>{ await logout(); });
-
-$("#profile-form")?.addEventListener("submit", async (e)=>{
-  e.preventDefault();
-  if(!state.user) return alert("Entre para editar o perfil.");
-  const display = $("#profile-name").value.trim();
-  const base = slugifyName(display);
-  const fallback = `${base}-${shortUid(state.user.uid)}`;
+function parseLocalDate(input){
+  // aceita datetime-local (yyyy-mm-ddThh:mm) e ISO padrão
+  if(!input) return null;
   try{
-    await runTransaction(db, async tx=>{
-      const uid = state.user.uid;
-      const profRef = doc(db,"profiles",uid);
-      const profSnap = await tx.get(profRef);
-      const oldUsername = profSnap.exists()? (profSnap.data().username||null) : null;
+    if(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(input)){
+      const [d, t] = input.split("T");
+      const [y,m,da] = d.split("-").map(Number);
+      const [hh,mm] = t.split(":").map(Number);
+      return new Date(y, m-1, da, hh, mm);
+    }
+    const d = new Date(input);
+    if(!isNaN(d.getTime())) return d;
+  }catch(_){}
+  return null;
+}
+const clamp01 = x => Math.max(0, Math.min(1, x));
+const clampPct = x => Math.max(0, Math.min(100, x));
 
-      const tryRef = doc(db,"usernames",base);
-      const trySnap = await tx.get(tryRef);
-      let chosen = base, fbRef=null, fbSnap=null;
-      if(trySnap.exists()){
-        chosen=fallback;
-        fbRef=doc(db,"usernames",chosen);
-        fbSnap=await tx.get(fbRef);
-        if(fbSnap.exists()) throw new Error("USERNAME_TAKEN_FALLBACK");
-      }
+// ===== Firebase config
+const firebaseConfig = {
+  apiKey: "AIzaSyCP3RH4aR-sSbB7CeZV6c6cpj9fC4HjhCw",
+  authDomain: "championschessifma.firebaseapp.com",
+  projectId: "championschessifma",
+  storageBucket: "championschessifma.firebasestorage.app",
+  messagingSenderId: "341916270688",
+  appId: "1:341916270688:web:eea60783f83c4a002cc305",
+  measurementId: "G-CRQSG5KVHY"
+};
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const rtdb = getDatabase(app);
 
-      let oldRef=null, oldSnap=null;
-      if(oldUsername){ oldRef=doc(db,"usernames",oldUsername); oldSnap=await tx.get(oldRef); }
-      if(oldRef && oldSnap?.exists() && oldSnap.data().uid===uid) tx.delete(oldRef);
+// ===== Admin config
+const ADMIN_EMAILS = [
+  // adicione seus e-mails admin aqui, por exemplo:
+  // "voce@ifma.edu.br"
+];
 
-      if(chosen===base) tx.set(tryRef,{uid,createdAt:serverTimestamp()});
-      else tx.set(fbRef,{uid,createdAt:serverTimestamp()});
+// ===== Estado
+const state = {
+  user: null,
+  admin: false,
+  players: [],
+  matches: [],
+  posts: [],
+  bets: [],
+  wallet: 0,
+  // observações internas
+  listeners: { players: null, matches: null, posts: null, bets: null, wallet: null, chat: null },
+};
 
-      tx.set(profRef,{displayName:display,username:chosen,email:state.user.email,updatedAt:serverTimestamp()},{merge:true});
-    });
-    await setDisplayName(state.user, display);
-    await loadProfile(state.user.uid);
-    alert("Perfil atualizado!");
-  }catch(err){
-    alert(err.message==="USERNAME_TAKEN_FALLBACK" ? "Não foi possível reservar um username único." : "Erro ao salvar perfil: "+err.message);
+// ===== Abas
+function showTab(tab){
+  $$(".view").forEach(v=>v.classList.remove("visible"));
+  $$(".tab").forEach(b=>b.classList.remove("active"));
+  const el = $(`#${tab}`);
+  if(el){ el.classList.add("visible"); }
+  const btn = $(`.tab[data-tab="${tab}"]`);
+  if(btn){ btn.classList.add("active"); }
+  // ir pro topo sempre que trocar
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function initTabs(){
+  $$(".tab").forEach(btn=>{
+    btn.onclick = ()=>{
+      const tab = btn.dataset.tab;
+      showTab(tab);
+    };
+  });
+  // chip do usuário abre PERFIL
+  const chip = $("#user-chip");
+  if(chip){
+    chip.onclick = ()=> showTab("perfil");
   }
-});
+}
 
-/* carteira mínima 6 para todo mundo */
+// ===== Auth
+async function loginGoogle(){
+  const provider = new GoogleAuthProvider();
+  await signInWithPopup(auth, provider);
+}
+async function logout(){
+  await signOut(auth);
+}
+
+async function checkAdmin(user){
+  if(!user) return false;
+  if(ADMIN_EMAILS.includes(user.email)) return true;
+  // fallback: Firestore doc admins/{uid}
+  try{
+    const ad = await getDoc(doc(db, "admins", user.uid));
+    return ad.exists() && ad.data()?.isAdmin === true;
+  }catch(_){ return false; }
+}
+
+function updateAuthUI(){
+  const chip = $("#user-chip");
+  const email = $("#user-email");
+  const adminBadge = $("#admin-badge");
+  const btnLogin = $("#btn-open-login");
+  const btnOut = $("#btn-logout");
+  const tabAdmin = $("#tab-admin");
+
+  if(state.user){
+    chip?.classList.remove("hidden");
+    email && (email.textContent = state.user.displayName || state.user.email);
+    btnLogin?.classList.add("hidden");
+    btnOut?.classList.remove("hidden");
+    if(state.admin){ adminBadge?.classList.remove("hidden"); tabAdmin?.classList.remove("hidden"); }
+    else { adminBadge?.classList.add("hidden"); tabAdmin?.classList.add("hidden"); }
+  }else{
+    chip?.classList.add("hidden");
+    btnLogin?.classList.remove("hidden");
+    btnOut?.classList.add("hidden");
+    adminBadge?.classList.add("hidden");
+    tabAdmin?.classList.add("hidden");
+  }
+
+  // aposta só logado
+  const betForm = $("#bet-form");
+  if(betForm){
+    const inputs = betForm.querySelectorAll("input,select,button,textarea");
+    inputs.forEach(i=> i.disabled = !state.user);
+  }
+}
+
+// ===== Carteira / Wallet
 async function ensureWalletInit(uid){
   if(!uid) return;
   const refWal = doc(db, "wallets", uid);
@@ -197,123 +175,529 @@ async function ensureWalletInit(uid){
         }
       }
     });
-  }catch(err){ console.error("ensureWalletInit failed:", err); }
+  }catch(err){
+    // fallback
+    try{
+      await setDoc(refWal, { points: 6, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }, { merge: true });
+    }catch(e){ console.error("ensureWalletInit fallback failed:", e); }
+  }
 }
 
-watchAuth(async (user)=>{
-  state.user=user;
-
-  $("#btn-open-login")?.classList.toggle("hidden",!!user);
-  $("#btn-logout")?.classList.toggle("hidden",!user);
-  $("#user-chip")?.classList.toggle("hidden",!user);
-  if($("#user-email")) $("#user-email").textContent = user ? (user.displayName||user.email) : "";
-
-  $("#chat-form")?.classList.toggle("hidden",!user);
-  $("#chat-login-hint")?.classList.toggle("hidden",!!user);
-
-  // apostas só para logados (desabilita visualmente)
-  const betForm = $("#bet-form");
-  if(betForm){
-    betForm.querySelectorAll("select,button,input").forEach(el => el.disabled = !user);
-    betForm.style.opacity = user ? "1" : ".6";
+function listenWallet(uid){
+  if(state.listeners.wallet) state.listeners.wallet(); // unsubscribe
+  if(!uid){
+    state.wallet = 0;
+    $("#wallet-points") && ($("#wallet-points").textContent = "0");
+    return;
   }
+  const refWal = doc(db, "wallets", uid);
+  state.listeners.wallet = onSnapshot(refWal, (snap)=>{
+    const data = snap.data();
+    state.wallet = (data && typeof data.points === "number") ? data.points : 0;
+    $("#wallet-points") && ($("#wallet-points").textContent = String(state.wallet));
+  });
+}
 
-  await loadProfile(user?.uid||null);
-  await refreshAdminStatus();
+// ===== Chat (Realtime Database)
+function initChat(){
+  const list = $("#chat-list");
+  const form = $("#chat-form");
+  const input = $("#chat-text");
 
-  if (user) { await ensureWalletInit(user.uid); }
+  // listeners únicos
+  if(state.listeners.chat) return;
 
-  renderPosts(); renderChat(); renderMatches(); renderHome(); renderAdminSemisList();
-});
+  const chatRef = rtdbRef(rtdb, "chat");
+  const renderItem = (id, msg) => {
+    // ignorar mensagens mais antigas que 24h (apenas no render)
+    const now = Date.now();
+    if(msg.ts && (now - msg.ts) > 24*60*60*1000) return;
 
-/* ========= COLEÇÕES ========= */
-const colPlayers = collection(db,"players");
-const colMatches = collection(db,"matches");
-const colPosts   = collection(db,"posts");
-const colBets    = collection(db,"bets");
-const colWallets = collection(db,"wallets");
+    const item = document.createElement("div");
+    item.className = "chat-item";
+    item.id = `chat-${id}`;
+    const time = new Date(msg.ts || Date.now());
+    const hh = fmt2(time.getHours()), mm = fmt2(time.getMinutes());
+    const canDel = !!state.admin || (state.user && state.user.uid === msg.uid);
+    item.innerHTML = `
+      <div class="meta"><b>${msg.name||"—"}</b> &lt;${msg.email||"—"}&gt; • ${hh}:${mm}</div>
+      <div>${(msg.text||"").replace(/</g,"&lt;")}</div>
+      ${canDel? `<div style="margin-top:8px"><button class="btn danger small btn-del-chat" data-id="${id}">🗑 Apagar</button></div>` : ""}
+    `;
+    list?.appendChild(item);
 
-/* ========= SNAPSHOTS ========= */
-onSnapshot(query(colPlayers, orderBy("name")), snap=>{
-  state.players = snap.docs.map(d=>({id:d.id,...d.data()}));
-  renderPlayers(); fillPlayersSelects(); renderTables(); renderPlayerSelect(); renderHome(); renderAdminSemisList(); populateBetOptions();
-});
+    if(canDel){
+      item.querySelector(".btn-del-chat")?.addEventListener("click", async ()=>{
+        if(!confirm("Apagar esta mensagem do chat?")) return;
+        await remove(rtdbRef(rtdb, `chat/${id}`));
+      });
+    }
+  };
 
-onSnapshot(query(colMatches, orderBy("date")), async snap=>{
-  const newMatches = snap.docs.map(d=>({id:d.id,...d.data()}));
+  onChildAdded(chatRef, (snap)=> renderItem(snap.key, snap.val()));
+  onChildRemoved(chatRef, (snap)=>{
+    const el = $(`#chat-${snap.key}`);
+    el?.remove();
+  });
 
-  // Post automático de resultado (se finalizado e ainda não marcado como anunciado)
-  if(await refreshAdminStatus()){
-    const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
-    for(const m of newMatches){
-      const isFinal = ["A","B","draw"].includes(m.result);
-      if(!isFinal) continue;
-      if(m.resultAnnounced) continue;
-      try{
-        await runTransaction(db, async tx=>{
-          const ref=doc(db,"matches",m.id);
-          const curSnap=await tx.get(ref);
-          if(!curSnap.exists()) return;
-          const cur=curSnap.data();
-          if(!["A","B","draw"].includes(cur.result) || cur.resultAnnounced) return;
+  form?.addEventListener("submit", async (e)=>{
+    e.preventDefault();
+    if(!state.user) return alert("Entre com Google para enviar.");
+    const text = (input?.value||"").trim();
+    if(!text) return;
+    await push(chatRef, {
+      uid: state.user.uid,
+      name: state.user.displayName || state.user.email,
+      email: state.user.email || "",
+      text,
+      ts: Date.now()
+    });
+    input.value = "";
+  });
 
-          const aName = mapP[cur.aId]||"?";
-          const bName = mapP[cur.bId]||"?";
-          let title="", body="";
-          if(cur.result==="A"){ title=`Vitória de ${aName} (${cur.code||""})`; body=`${aName} venceu ${bName} ${cur.group?`(Grupo ${cur.group}) `:""}na ${stageLabel(cur.stage)}.`; }
-          if(cur.result==="B"){ title=`Vitória de ${bName} (${cur.code||""})`; body=`${bName} venceu ${aName} ${cur.group?`(Grupo ${cur.group}) `:""}na ${stageLabel(cur.stage)}.`; }
-          if(cur.result==="draw"){ title=`Empate: ${aName} × ${bName} (${cur.code||""})`; body=`${aName} e ${bName} empataram ${cur.group?`(Grupo ${cur.group}) `:""}na ${stageLabel(cur.stage)}.`; }
+  // dica login
+  $("#chat-login-hint")?.classList.toggle("hidden", !!state.user);
+}
 
-          tx.update(ref,{ resultAnnounced:true, resultAnnouncedAt:serverTimestamp() });
-          const postRef = doc(collection(db,"posts"));
-          tx.set(postRef,{ title, body, createdAt:serverTimestamp(), author:"Sistema", authorEmail:"" });
-        });
-      }catch{}
+// ===== Players
+function listenPlayers(){
+  if(state.listeners.players) state.listeners.players();
+  state.listeners.players = onSnapshot(query(collection(db,"players"), orderBy("name","asc")), (qs)=>{
+    state.players = qs.docs.map(d=>({id:d.id, ...d.data()}));
+    renderPlayers();
+    renderPlayerSelects();
+    renderTables();
+    renderBetsSelect();
+    renderHome(); // nomes nas próximas partidas
+  });
+}
+
+function renderPlayers(){
+  const a = state.players.filter(p=>p.group==="A");
+  const b = state.players.filter(p=>p.group==="B");
+  const mkCard = p => `
+    <div class="player-card" data-id="${p.id}">
+      <div class="avatar">${(p.name||"?").slice(0,2).toUpperCase()}</div>
+      <div class="player-meta">
+        <div class="name">${p.name||"?"}</div>
+        <div class="muted">Grupo ${p.group||"—"}</div>
+      </div>
+    </div>`;
+  $("#players-cards-A") && ($("#players-cards-A").innerHTML = a.map(mkCard).join("") || "<p class='muted'>Sem jogadores.</p>");
+  $("#players-cards-B") && ($("#players-cards-B").innerHTML = b.map(mkCard).join("") || "<p class='muted'>Sem jogadores.</p>");
+
+  // clique abre detalhes e botão "Abrir perfil"
+  $$("#players .player-card").forEach(card=>{
+    card.onclick = ()=>{
+      const id = card.dataset.id;
+      const p = state.players.find(x=>x.id===id);
+      if(!p) return;
+      // destacar
+      $$("#players .player-card").forEach(c=>c.classList.remove("selected"));
+      card.classList.add("selected");
+      renderPlayerDetails(p.id);
+    };
+  });
+}
+
+function renderPlayerSelects(){
+  const sel = $("#player-select");
+  if(sel){
+    sel.innerHTML = state.players.map(p=> `<option value="${p.id}">${p.name}</option>`).join("");
+    sel.onchange = ()=> renderPlayerDetails(sel.value);
+  }
+  // selects do formulário de partidas + semis
+  const sA = $("#match-a"), sB = $("#match-b");
+  if(sA && sB){
+    sA.innerHTML = state.players.map(p=> `<option value="${p.id}">${p.name}</option>`).join("");
+    sB.innerHTML = sA.innerHTML;
+  }
+  const s1a=$("#semi1-a"), s1b=$("#semi1-b"), s2a=$("#semi2-a"), s2b=$("#semi2-b");
+  [s1a,s1b,s2a,s2b].forEach(sel=>{
+    if(sel) sel.innerHTML = state.players.map(p=> `<option value="${p.id}">${p.name}</option>`).join("");
+  });
+}
+
+function buildPlayerProfileHTML(p){
+  const stats = computePlayerStats(p.id);
+  const hist = state.matches
+    .filter(m=> m.aId===p.id || m.bId===p.id)
+    .sort((x,y)=> (parseLocalDate(y.date)||0) - (parseLocalDate(x.date)||0));
+
+  const mapP=Object.fromEntries(state.players.map(pl=>[pl.id,pl.name]));
+  const rows = hist.map(m=>{
+    const opp = m.aId===p.id ? m.bId : m.aId;
+    let res = "—";
+    if(m.result==="draw") res = "Empate";
+    else if(m.result==="A") res = (m.aId===p.id?"Vitória":"Derrota");
+    else if(m.result==="B") res = (m.bId===p.id?"Vitória":"Derrota");
+    else if(m.result==="postponed") res = "Adiado";
+    return `
+      <tr>
+        <td>${m.stage==="groups" ? `F. Grupos${m.group?` ${m.group}`:""}` : stageLabel(m.stage)}</td>
+        <td>${fmtLocalDateStr(m.date)}</td>
+        <td>${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}</td>
+        <td>${res}</td>
+        <td>${m.code||"—"}</td>
+      </tr>`;
+  }).join("");
+
+  return `
+    <div class="card">
+      <div class="profile-hero">
+        <div class="profile-avatar">${(p.name||"?").slice(0,2).toUpperCase()}</div>
+        <div>
+          <h2 style="margin:0">${p.name||"—"} <span class="badge-small">Grupo ${p.group||"—"}</span></h2>
+          <div class="profile-stats">
+            <div class="stat"><b>Pontos (Grupos):</b> ${stats.points}</div>
+            <div class="stat"><b>V:</b> ${stats.wins} · <b>E:</b> ${stats.draws} · <b>D:</b> ${stats.losses}</div>
+            <div class="stat"><b>Jogos:</b> ${stats.played}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">Histórico de Partidas</h3>
+      <div class="table">
+        <table>
+          <thead>
+            <tr><th>Etapa</th><th>Data/Hora</th><th>Partida</th><th>Resultado</th><th>Código</th></tr>
+          </thead>
+          <tbody>${rows||`<tr><td colspan="5" class="muted">Sem partidas registradas.</td></tr>`}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function renderPlayerDetails(playerId){
+  const p = state.players.find(x=>x.id===playerId);
+  if(!p){ $("#player-details") && ($("#player-details").innerHTML = "<p class='muted'>Selecione um jogador.</p>"); return; }
+
+  const stats = computePlayerStats(p.id);
+  $("#player-details") && ($("#player-details").innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+      <div style="display:flex;align-items:center;gap:12px">
+        <div class="avatar" style="width:54px;height:54px;font-size:18px">${(p.name||"?").slice(0,2).toUpperCase()}</div>
+        <div>
+          <div style="font-weight:800">${p.name}</div>
+          <div class="muted">Grupo ${p.group}</div>
+          <div class="muted">Grupos: <b>${stats.points} pts</b> • V ${stats.wins} / E ${stats.draws} / D ${stats.losses}</div>
+        </div>
+      </div>
+      <div>
+        <button class="btn ghost" id="btn-open-player-profile" data-id="${p.id}">Abrir perfil</button>
+      </div>
+    </div>
+  `);
+
+  $("#btn-open-player-profile")?.addEventListener("click", ()=>{
+    const sec = $("#player-profile");
+    if(sec) sec.innerHTML = buildPlayerProfileHTML(p);
+    showTab("player-profile");
+  });
+}
+
+// ===== Pontuação / Standings (só fase de grupos)
+function computePlayerStats(playerId){
+  const groupMatches = state.matches.filter(m=> m.stage==="groups" && (m.aId===playerId || m.bId===playerId));
+  let points=0,w=0,d=0,l=0,played=0;
+  for(const m of groupMatches){
+    if(!m.result) continue;
+    if(m.result==="postponed") continue;
+    played++;
+    if(m.result==="draw"){ d++; points+=1; }
+    else if(m.result==="A"){
+      if(m.aId===playerId){ w++; points+=3; } else { l++; }
+    }else if(m.result==="B"){
+      if(m.bId===playerId){ w++; points+=3; } else { l++; }
     }
   }
+  return { points, wins:w, draws:d, losses:l, played };
+}
+function renderTables(){
+  const groups = ["A","B"];
+  for(const g of groups){
+    const players = state.players.filter(p=>p.group===g);
+    const rows = players.map(p=>{
+      const st = computePlayerStats(p.id);
+      return { id:p.id, name:p.name, ...st };
+    }).sort((a,b)=>{
+      if(b.points!==a.points) return b.points-a.points;
+      if(b.wins!==a.wins) return b.wins-a.wins;
+      return a.name.localeCompare(b.name);
+    });
 
-  prevResults.clear(); newMatches.forEach(m=>prevResults.set(m.id,m.result||null));
-
-  state.matches = newMatches;
-  renderMatches(); renderTables(); renderPlayers(); renderPlayerDetails(); renderHome(); renderAdminSemisList();
-  populateBetOptions();
-
-  if(state.admin){
-    await autoPostponeOverdueMatches();  // adia só a vencida (24h após prazo)
-    await checkAndAutoCreateSemis();     // cria semis quando grupos acabam
-    await settleFinishedMatchesBets();   // liquida apostas
+    const html = `
+      <div class="table">
+        <table>
+          <thead>
+            <tr><th>#</th><th>Jogador</th><th>J</th><th>V</th><th>E</th><th>D</th><th>Pts</th></tr>
+          </thead>
+          <tbody>
+            ${rows.map((r,idx)=>`
+              <tr class="${idx===0?'pos-1': idx===1?'pos-2':''}">
+                <td>${idx+1}</td>
+                <td>${r.name}</td>
+                <td>${r.played}</td>
+                <td>${r.wins}</td>
+                <td>${r.draws}</td>
+                <td>${r.losses}</td>
+                <td><b>${r.points}</b></td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+    $(`#table-${g}`)?.replaceChildren();
+    $(`#table-${g}`) && ($(`#table-${g}`).innerHTML = html);
   }
-});
-
-onSnapshot(query(colPosts, orderBy("createdAt","desc")), snap=>{
-  state.posts = snap.docs.map(d=>({id:d.id,...d.data()}));
-  renderPosts(); renderHome();
-});
-
-onSnapshot(query(colBets, orderBy("createdAt","desc")), snap=>{
-  state.bets = snap.docs.map(d=>({id:d.id,...d.data()}));
-  renderBets();
-});
-onSnapshot(colWallets, snap=>{
-  state.wallets = snap.docs.map(d=>({id:d.id,...d.data()}));
-  renderWallet();
-});
-
-/* ========= STATS ========= */
-function statsFromMatches(){
-  const stats={};
-  for(const p of state.players){ stats[p.id]={ id:p.id, name:p.name, group:p.group, points:0, wins:0, draws:0, losses:0, games:0, winsOver:{} }; }
-  for(const m of state.matches){
-    if(m.stage!=="groups") continue;
-    const a=stats[m.aId], b=stats[m.bId]; if(!a||!b) continue;
-    if(m.result==="A"){ a.points+=3; a.wins++; a.games++; b.losses++; b.games++; a.winsOver[b.name]=(a.winsOver[b.name]||0)+1; }
-    else if(m.result==="B"){ b.points+=3; b.wins++; b.games++; a.losses++; a.games++; b.winsOver[a.name]=(b.winsOver[a.name]||0)+1; }
-    else if(m.result==="draw"){ a.points+=1; b.points+=1; a.draws++; b.draws++; a.games++; b.games++; }
-  }
-  return stats;
 }
 
-/* ========= HOME ========= */
+// ===== Partidas
+function stageLabel(s){
+  if(s==="semifinal") return "Semifinal";
+  if(s==="final") return "Final";
+  if(s==="third") return "3º Lugar";
+  if(s==="groups") return "F. Grupos";
+  return s||"—";
+}
+
+function listenMatches(){
+  if(state.listeners.matches) state.listeners.matches();
+  state.listeners.matches = onSnapshot(query(collection(db,"matches"), orderBy("date","asc")), (qs)=>{
+    state.matches = qs.docs.map(d=>({id:d.id, ...d.data()}));
+    renderMatches();
+    renderTables();
+    renderBetsSelect();
+    renderHome();
+    autoCreatePostsForFinished();
+    autoPostponeOverdue();
+    autoCreateSemisIfDone();
+    settleBetsIfFinished();
+  });
+}
+
+function probForMatch(m){
+  // Probabilidade V/E/D (A/empate/B) — só para exibir na aba Partidas
+  // Mistura base de histórico (fase de grupos) + distribuição de apostas existentes
+  const sA = computePlayerStats(m.aId);
+  const sB = computePlayerStats(m.bId);
+  const wpA = (sA.wins + 1) / ((sA.wins + sA.losses) + 2); // suavização
+  const wpB = (sB.wins + 1) / ((sB.wins + sB.losses) + 2);
+  let baseA = wpA / (wpA + wpB);
+  let baseB = 1 - baseA;
+  let baseD = 0.15; // empate base
+  // distribuição de apostas para este jogo
+  const bets = state.bets.filter(b=> b.matchId===m.id);
+  const tot = bets.length || 1;
+  const shareA = bets.filter(b=>b.pick==="A").length / tot;
+  const shareB = bets.filter(b=>b.pick==="B").length / tot;
+  const shareD = bets.filter(b=>b.pick==="draw").length / tot;
+
+  // mistura 55% histórico, 45% apostas (empate mistura 15% base + shareD/2)
+  let pA = clamp01(0.55*baseA + 0.45*shareA);
+  let pB = clamp01(0.55*baseB + 0.45*shareB);
+  let pD = clamp01(0.30*baseD + 0.70*shareD*0.7); // segura empate
+
+  // normaliza para somar 1
+  const s = pA + pB + pD || 1;
+  pA/=s; pB/=s; pD/=s;
+
+  // porcentagens
+  return {
+    A: Math.round(clampPct(pA*100)),
+    D: Math.round(clampPct(pB*100)), // "D" = Derrota de A (vitória de B)
+    E: Math.round(clampPct(pD*100))
+  };
+}
+
+function renderMatches(){
+  // atualizar opções do filtro se necessário
+  const filterSel = $("#filter-stage");
+  if(filterSel && !filterSel.dataset.patched){
+    filterSel.innerHTML = `
+      <option value="groups">Fase de grupos</option>
+      <option value="groupA">Grupo A</option>
+      <option value="groupB">Grupo B</option>
+      <option value="semifinal">Semifinal</option>
+      <option value="all">Todas</option>`;
+    filterSel.dataset.patched = "1";
+  }
+  const filter = $("#filter-stage")?.value || "groups";
+
+  const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
+  const GA = state.matches.filter(m=>m.stage==="groups" && m.group==="A");
+  const GB = state.matches.filter(m=>m.stage==="groups" && m.group==="B");
+  const KO = state.matches.filter(m=>m.stage!=="groups");
+
+  const resLabel = (m)=>{
+    if(m.result==="A") return mapP[m.aId]||"?";
+    if(m.result==="B") return mapP[m.bId]||"?";
+    if(m.result==="draw") return "Empate";
+    if(m.result==="postponed") return "Adiado";
+    return "Pendente";
+  };
+  const mkRow = (m)=> {
+    const p = probForMatch(m);
+    return `
+      <tr data-id="${m.id}">
+        <td><span class="chip chip--stage">${m.stage==="groups" ? `F. Grupos${m.group?` ${m.group}`:""}` : stageLabel(m.stage)}</span></td>
+        <td><b>${mapP[m.aId]||"?"}</b> × <b>${mapP[m.bId]||"?"}</b></td>
+        <td>${fmtLocalDateStr(m.date)}</td>
+        <td>
+          <span class="badge-small">V ${p.A}%</span>
+          <span class="badge-small">E ${p.E}%</span>
+          <span class="badge-small">D ${p.D}%</span>
+        </td>
+        <td><span class="chip chip--code">${m.code||"-"}</span></td>
+        <td><span class="chip chip--res">${resLabel(m)}</span></td>
+        ${state.admin? `<td><button class="btn ghost btn-edit" data-id="${m.id}">Editar</button></td>` : ""}
+      </tr>
+    `;
+  };
+  const mkTable = (items)=>`
+    <div class="table">
+      <table>
+        <thead>
+          <tr>
+            <th>Etapa/Grupo</th>
+            <th>Partida</th>
+            <th>Data/Hora</th>
+            <th>Prob. (V/E/D)</th>
+            <th>Código</th>
+            <th>Resultado</th>
+            ${state.admin?`<th>Ações</th>`:""}
+          </tr>
+        </thead>
+        <tbody>
+          ${items.map(mkRow).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  let html = "";
+  if(filter==="groups" || filter==="groupA" || filter==="all"){
+    if(filter!=="groupB"){
+      html += `<div class="card" style="margin-bottom:12px"><h3>F. Grupos – Grupo A</h3>${mkTable(GA)}</div>`;
+    }
+  }
+  if(filter==="groups" || filter==="groupB" || filter==="all"){
+    if(filter!=="groupA"){
+      html += `<div class="card" style="margin-bottom:12px"><h3>F. Grupos – Grupo B</h3>${mkTable(GB)}</div>`;
+    }
+  }
+  if(filter==="semifinal" || filter==="all"){
+    const semis = state.matches.filter(m=>m.stage==="semifinal");
+    html += `<div class="card"><h3>Semifinais / KO</h3>${mkTable(semis.length?semis:KO)}</div>`;
+  }
+  $("#matches-list") && ($("#matches-list").innerHTML = html || `<div class="card"><p class="muted">Nenhuma partida.</p></div>`);
+
+  if(state.admin){
+    $$(".btn-edit").forEach(b=>{
+      b.onclick = ()=> loadMatchToForm(b.dataset.id);
+    });
+  }
+}
+
+function bindMatchForm(){
+  const form = $("#match-form");
+  const resetBtn = $("#match-reset");
+  const delBtn = $("#match-delete");
+  const btnResetT = $("#btn-reset-tournament");
+
+  form?.addEventListener("submit", async (e)=>{
+    e.preventDefault();
+    const id = $("#match-id").value || null;
+    const aId = $("#match-a").value;
+    const bId = $("#match-b").value;
+    const stage = $("#match-stage").value;
+    const group = $("#match-group").value || "";
+    const code = $("#match-code").value.trim();
+    const result = $("#match-result").value || "";
+    const dateNew = $("#match-date").value;
+    const dateOrig = $("#match-date-orig").value;
+
+    const payload = { aId, bId, stage, group: group||null, code: code||null, result: result||null };
+    if(dateNew){ payload.date = dateNew; }
+    else if(!id){ payload.date = null; } // novo sem data
+    // se edição e não alterou horário, mantém o original
+    if(id && !dateNew && dateOrig){ payload.date = dateOrig; }
+
+    if(!id){
+      await addDoc(collection(db,"matches"), { ...payload, createdAt: serverTimestamp() });
+    }else{
+      await updateDoc(doc(db,"matches",id), { ...payload, updatedAt: serverTimestamp() });
+      // se definiu resultado, cria post automático (sem duplicar)
+      if(result && ["A","B","draw"].includes(result)){
+        await ensurePostForMatch(id);
+      }
+    }
+    form.reset();
+    $("#match-id").value="";
+    $("#match-date-orig").value="";
+  });
+
+  resetBtn?.addEventListener("click", ()=> {
+    form.reset();
+    $("#match-id").value="";
+    $("#match-date-orig").value="";
+  });
+
+  delBtn?.addEventListener("click", async ()=>{
+    const id = $("#match-id").value;
+    if(!id) return;
+    if(!confirm("Excluir esta partida?")) return;
+    await deleteDoc(doc(db,"matches",id));
+    form.reset();
+    $("#match-id").value="";
+    $("#match-date-orig").value="";
+  });
+
+  btnResetT?.addEventListener("click", async ()=>{
+    if(!confirm("Tem certeza que deseja RESETAR o torneio? Isso apaga partidas, posts e apostas.")) return;
+    // apaga matches, posts, bets (players ficam)
+    const b = writeBatch(db);
+    const mqs = await getDocs(collection(db,"matches"));
+    mqs.forEach(d=> b.delete(d.ref));
+    const pqs = await getDocs(collection(db,"posts"));
+    pqs.forEach(d=> b.delete(d.ref));
+    const bqs = await getDocs(collection(db,"bets"));
+    bqs.forEach(d=> b.delete(d.ref));
+    await b.commit();
+    alert("Torneio resetado.");
+  });
+
+  $("#filter-stage")?.addEventListener("change", renderMatches);
+}
+
+function loadMatchToForm(id){
+  const m = state.matches.find(x=>x.id===id);
+  if(!m) return;
+  $("#match-id").value = m.id;
+  $("#match-a").value = m.aId || "";
+  $("#match-b").value = m.bId || "";
+  $("#match-stage").value = m.stage || "groups";
+  $("#match-group").value = m.group || "";
+  $("#match-code").value = m.code || "";
+  $("#match-result").value = m.result || "";
+  $("#match-date").value = m.date ? (()=>{
+    const d = parseLocalDate(m.date);
+    // datetime-local yyyy-MM-ddThh:mm
+    const yyyy = d.getFullYear(); const mm = fmt2(d.getMonth()+1); const dd = fmt2(d.getDate());
+    const hh = fmt2(d.getHours()); const mi = fmt2(d.getMinutes());
+    return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+  })() : "";
+  $("#match-date-orig").value = m.date || "";
+
+  // rolar até o form (aba Partidas)
+  const formCard = $("#admin-matches") || $("#match-form");
+  if(formCard) formCard.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+// ===== Home
 function renderHome(){
   const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
   const scheduled=state.matches.filter(m=>!!m.date).slice().sort((a,b)=>parseLocalDate(a.date)-parseLocalDate(b.date));
@@ -326,25 +710,33 @@ function renderHome(){
   }
   pick=pick.slice(0,4);
 
-  const rows=pick.map(m=>{
-    const { probs } = computeProbabilitiesAndOdds(m);
-    const A = clamp(probs.A,0,100), B = clamp(probs.B,0,100), D = clamp(probs.D,0,100);
-    // super compacto
-    const prob = `<span class="prob-pill" title="Probabilidades: A/B/Vitória · E · B/A/Vitória">
-      A ${A}% · E ${D}% · B ${B}%
-    </span>`;
-    return `<tr>
-      <td>${stageShort(m)}</td>
+  const stageText = (m)=>{
+    if(m.stage==="groups") return `F. Grupos${m.group?` ${m.group}`:""}`;
+    if(m.stage==="semifinal") return "Semifinal";
+    if(m.stage==="final") return "Final";
+    if(m.stage==="third") return "3º Lugar";
+    return m.stage||"—";
+  };
+
+  const rows=pick.map(m=>`
+    <tr>
+      <td>${stageText(m)}</td>
       <td>${fmtTime(m.date)}</td>
       <td>${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}</td>
-      <td>${prob}</td>
-    </tr>`;
-  }).join("");
+    </tr>
+  `).join("");
 
-  const table=`<table style="font-size:12px; line-height:1.2">
-    <thead><tr><th>Etapa</th><th>Hora</th><th>Partida</th><th>Prob</th></tr></thead>
-    <tbody>${rows||"<tr><td colspan='4'>Sem partidas hoje/próximo dia.</td></tr>"}</tbody>
-  </table>`;
+  const table=`
+    <table>
+      <thead><tr><th>Etapa</th><th>Hora</th><th>Partida</th></tr></thead>
+      <tbody>${rows||"<tr><td colspan='3'>Sem partidas hoje/próximo dia.</td></tr>"}</tbody>
+    </table>
+    <div class="home-next-extra">
+      <p><b>Como funciona:</b> exibimos até <b>4 partidas</b> do dia atual; se não houver, mostramos as do próximo dia agendado.</p>
+      <p>Edite datas e resultados na aba <b>Partidas</b>. Resultados confirmados geram comunicados na aba <b>Post</b>.</p>
+      <p>Na <b>Tabela</b>, a pontuação é válida somente para a <b>Fase de Grupos</b> (Vitória 3 · Empate 1 · Derrota 0).</p>
+    </div>
+  `;
   $("#home-next") && ($("#home-next").innerHTML=table);
 
   // Últimos comunicados
@@ -353,709 +745,443 @@ function renderHome(){
     $("#home-posts").innerHTML = posts || `<p class="muted">Sem comunicados.</p>`;
     if(state.admin){
       $$("#home-posts .btn-del-post").forEach(b=>{
-        b.onclick=async ()=>{ if(!(await confirmAction("Apagar este comunicado?")))return; await deleteDoc(doc(db,"posts",b.dataset.id)); };
+        b.onclick=async ()=>{ if(!confirm("Apagar este comunicado?"))return; await deleteDoc(doc(db,"posts",b.dataset.id)); };
       });
     }
   }
 }
 
-/* ========= PLAYERS / PERFIL ========= */
-function renderPlayers(){
-  const stats=statsFromMatches();
-  const groups={A:[],B:[]};
-  for(const p of state.players){
-    const s=stats[p.id]; const initials=(p.name||"?").split(" ").map(x=>x[0]).slice(0,2).join("").toUpperCase();
-    const card=`
-      <div class="player-card" data-id="${p.id}">
-        <div class="avatar">${initials}</div>
-        <div class="player-meta">
-          <div class="name">${p.name} <span class="badge-small">Grupo ${p.group}</span></div>
-          <div class="muted">Pts:<b>${s.points}</b> · J:${s.games} · V:${s.wins} · E:${s.draws} · D:${s.losses}</div>
-        </div>
-      </div>`;
-    (groups[p.group]||(groups.A=[])).push(card);
-  }
-  $("#players-cards-A") && ($("#players-cards-A").innerHTML = groups.A.join("")||`<p class="muted">Sem jogadores.</p>`);
-  $("#players-cards-B") && ($("#players-cards-B").innerHTML = groups.B.join("")||`<p class="muted">Sem jogadores.</p>`);
-
-  $$("#players-cards-A .player-card, #players-cards-B .player-card").forEach(c=>{
-    c.onclick=()=>{ openPlayerProfile(c.dataset.id); };
+// ===== Posts
+function listenPosts(){
+  if(state.listeners.posts) state.listeners.posts();
+  state.listeners.posts = onSnapshot(query(collection(db,"posts"), orderBy("createdAt","desc")), (qs)=>{
+    state.posts = qs.docs.map(d=>({id:d.id, ...d.data()}));
+    renderPosts();
+    renderHome();
   });
 }
-function renderPlayerSelect(){
-  const sel=$("#player-select"); if(!sel) return;
-  sel.innerHTML=""; const o=document.createElement("option"); o.value=""; o.textContent="— selecione —"; sel.appendChild(o);
-  state.players.forEach(p=>{ const op=document.createElement("option"); op.value=p.id; op.textContent=p.name; sel.appendChild(op); });
-  sel.onchange=renderPlayerDetails;
-}
-function buildPlayerDetailsHTML(id){
-  const p=state.players.find(x=>x.id===id); const stats=statsFromMatches(); const s=stats[id];
-  const history = state.matches
-    .filter(m=> m.aId===id || m.bId===id)
-    .map(m=>{
-      const opp = m.aId===id ? state.players.find(x=>x.id===m.bId)?.name : state.players.find(x=>x.id===m.aId)?.name;
-      const youWin = (m.result==="A" && m.aId===id) || (m.result==="B" && m.bId===id);
-      const youDraw = m.result==="draw";
-      const res = youWin? "Vitória" : youDraw? "Empate" : (["A","B"].includes(m.result)?"Derrota":"Pendente");
-      return `<tr><td>${stageLabel(m.stage)} ${m.group?`/ ${m.group}`:""}</td><td>${opp||"?"}</td><td>${fmtLocalDateStr(m.date)}</td><td>${res}</td><td>${m.code||"-"}</td></tr>`;
-    }).join("");
+function renderPostItem(p){
+  const dt = p.createdAt?.toDate ? p.createdAt.toDate() : (p.createdAt? new Date(p.createdAt) : new Date());
+  const hh = fmt2(dt.getHours()), mm = fmt2(dt.getMinutes());
+  const who = p.authorName ? `${p.authorName} <${p.authorEmail||""}>` : (p.authorEmail||"—");
   return `
-    <p><b>${s?.name||p?.name||"?"}</b> — Grupo ${p?.group||"-"}</p>
-    <p>Pontos: <b>${s?.points||0}</b> · Jogos: <b>${s?.games||0}</b> · V:${s?.wins||0} · E:${s?.draws||0} · D:${s?.losses||0}</p>
-    <div style="margin:6px 0 10px 0">
-      ${Object.entries(s?.winsOver||{}).map(([n,c])=>`<span class="pill">Venceu ${n} ×${c}</span>`).join("") || "<span class='muted'>Sem vitórias registradas.</span>"}
-    </div>
-    <div style="margin-top:8px"><button class="btn" data-open-profile="${p?.id}">Abrir perfil</button></div>
-    <div class="table" style="margin-top:10px">
-      <table>
-        <thead><tr><th>Etapa</th><th>Adversário</th><th>Data</th><th>Resultado</th><th>Código</th></tr></thead>
-        <tbody>${history || "<tr><td colspan='5'>Sem partidas.</td></tr>"}</tbody>
-      </table>
+    <div class="post" id="post-${p.id}">
+      <div>
+        <div class="meta"><b>${p.title||"Comunicado"}</b> — ${hh}:${mm}</div>
+        <div style="margin-top:6px">${(p.body||"").replace(/</g,"&lt;").replace(/\n/g,"<br>")}</div>
+        ${state.admin? `<div style="margin-top:8px"><button class="btn danger small btn-del-post" data-id="${p.id}">🗑 Apagar</button></div>` : ""}
+      </div>
     </div>
   `;
-}
-function renderPlayerDetails(){
-  const sel=$("#player-select"); if(!sel) return;
-  const id = sel.value;
-  const box=$("#player-details"); if(!box) return;
-  if(!id){ box.innerHTML=`<p class="muted">Selecione um jogador para ver detalhes.</p>`; return; }
-  box.innerHTML = buildPlayerDetailsHTML(id);
-  const btn = box.querySelector("[data-open-profile]");
-  if(btn) btn.addEventListener("click", ()=> openPlayerProfile(id));
-}
-function openPlayerProfile(id){
-  const container=$("#player-profile"); if(!container){ showTab("players"); return; }
-  container.innerHTML = buildPlayerProfileHTML(id);
-  container.querySelectorAll("[data-back]").forEach(b=> b.onclick=()=> showTab("players"));
-  location.hash = `player/${id}`;
-  showTab("player-profile");
-}
-function buildPlayerProfileHTML(id){
-  const p=state.players.find(x=>x.id===id);
-  const stats=statsFromMatches(); const s=stats[id] || {points:0,games:0,wins:0,draws:0,losses:0,name:p?.name};
-  const initials=(p?.name||"?").split(" ").map(x=>x[0]).slice(0,2).join("").toUpperCase();
-
-  const history = state.matches
-    .filter(m=> m.aId===id || m.bId===id)
-    .map(m=>{
-      const opp = m.aId===id ? state.players.find(x=>x.id===m.bId)?.name : state.players.find(x=>x.id===m.aId)?.name;
-      const youWin = (m.result==="A" && m.aId===id) || (m.result==="B" && m.bId===id);
-      const youDraw = m.result==="draw";
-      const res = youWin? "Vitória" : youDraw? "Empate" : (["A","B"].includes(m.result)?"Derrota":"Pendente");
-      return `<tr>
-        <td>${stageLabel(m.stage)} ${m.group?`/ ${m.group}`:""}</td>
-        <td>${opp||"?"}</td>
-        <td>${fmtLocalDateStr(m.date)}</td>
-        <td>${res}</td>
-        <td>${m.code||"-"}</td>
-      </tr>`;
-    }).join("");
-
-  const winsOver = Object.entries(s?.winsOver||{}).map(([n,c])=>`<span class="pill">Venceu ${n} ×${c}</span>`).join("") || "<span class='muted'>Sem vitórias registradas.</span>";
-
-  return `
-    <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <h2>Perfil do Jogador</h2>
-        <button class="btn ghost" data-back>Voltar</button>
-      </div>
-
-      <div class="profile-hero" style="margin-top:10px;display:flex;gap:14px;align-items:center">
-        <div class="profile-avatar" style="width:64px;height:64px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#0e141b;border:1px solid #1f2630;font-weight:800;color:#cde6d7">${initials}</div>
-        <div>
-          <h3 style="margin:0 0 6px 0">${p?.name||"?"} <span class="badge-small">Grupo ${p?.group||"-"}</span></h3>
-          <div class="profile-stats" style="display:flex;gap:12px;flex-wrap:wrap">
-            <div class="stat"><b>Pontos:</b> ${s.points}</div>
-            <div class="stat"><b>Jogos:</b> ${s.games}</div>
-            <div class="stat"><b>V:</b> ${s.wins}</div>
-            <div class="stat"><b>E:</b> ${s.draws}</div>
-            <div class="stat"><b>D:</b> ${s.losses}</div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="card" style="margin-top:12px">
-      <h3>Histórico de Partidas</h3>
-      <div class="table">
-        <table>
-          <thead><tr><th>Etapa</th><th>Adversário</th><th>Data</th><th>Resultado</th><th>Código</th></tr></thead>
-          <tbody>${history || "<tr><td colspan='5'>Sem partidas.</td></tr>"}</tbody>
-        </table>
-      </div>
-    </div>
-
-    <div class="card" style="margin-top:12px">
-      <h3>Confrontos Diretos</h3>
-      <div>${winsOver}</div>
-    </div>
-  `;
-}
-window.addEventListener("load",()=>{
-  const h=location.hash.replace("#","");
-  if(h.startsWith("player/")){ openPlayerProfile(h.split("/")[1]); }
-  // Chat deve aparecer mesmo sem o usuário enviar nada
-  initRealtimeChat();
-});
-
-/* ========= TABELAS (Grupos) ========= */
-function renderTables(){
-  const stats=statsFromMatches(); const groups={A:[],B:[]};
-  for(const id in stats){ const s=stats[id]; (groups[s.group]||(groups.A=[])).push(s); }
-  ["A","B"].forEach(g=>{
-    const arr=(groups[g]||[]).sort((x,y)=> y.points-x.points || y.wins-x.wins || x.name.localeCompare(y.name));
-    const rows=arr.map((s,i)=>`<tr class="pos-${i+1}"><td>${i+1}</td><td>${s.name}</td><td>${s.points}</td><td>${s.games}</td><td>${s.wins}</td><td>${s.draws}</td><td>${s.losses}</td></tr>`).join("");
-    const html=`<div class="table"><table><thead><tr><th>#</th><th>Jogador</th><th>Pts</th><th>J</th><th>V</th><th>E</th><th>D</th></tr></thead><tbody>${rows}</tbody></table></div>`;
-    const box=$(`#table-${g}`); if(box) box.innerHTML=html;
-  });
-}
-
-/* ========= PROBABILIDADES / ODDS ========= */
-function getMatchBetCounts(matchId){
-  const bets = state.bets.filter(b => b.matchId === matchId);
-  let cA=0, cB=0, cD=0;
-  for(const b of bets){ if(b.pick==="A") cA++; else if(b.pick==="B") cB++; else if(b.pick==="draw") cD++; }
-  return { cA, cB, cD, total: cA+cB+cD };
-}
-function perfScore(playerId){
-  const stats = statsFromMatches();
-  const s = stats[playerId] || { wins:0, draws:0, losses:0, games:0 };
-  const raw = (s.wins*3 + s.draws*1 - s.losses*2);
-  return 1 + (s.games ? raw / s.games : 0); // mínimo 1
-}
-function computeProbabilitiesAndOdds(m){
-  const { cA, cB, cD } = getMatchBetCounts(m.id);
-  const sA = cA + 1, sB = cB + 1, sD = cD + 1;
-  const S  = sA + sB + sD;
-
-  const pbA = sA / S, pbB = sB / S, pbD = sD / S;
-
-  const pAperf = perfScore(m.aId);
-  const pBperf = perfScore(m.bId);
-  const perfSum = pAperf + pBperf || 1;
-  const pfA = pAperf / perfSum;
-  const pfB = pBperf / perfSum;
-
-  // 60% apostas + 40% desempenho; empate baseline 10%
-  let pA = 0.6*pbA + 0.4*pfA;
-  let pB = 0.6*pbB + 0.4*pfB;
-  let pD = 0.6*pbD + 0.4*0.10;
-
-  // normaliza e limita
-  const T = pA + pB + pD || 1;
-  pA = clamp(pA/T, 0.001, 0.999);
-  pB = clamp(pB/T, 0.001, 0.999);
-  pD = clamp(pD/T, 0.001, 0.999);
-
-  // odds (capadas)
-  const oddA = clamp(1/pA, 1.2, 5);
-  const oddB = clamp(1/pB, 1.2, 5);
-  const oddD = clamp(1/pD, 1.2, 5);
-
-  const PctA = clamp(Math.round(pA*100), 0, 100);
-  const PctB = clamp(Math.round(pB*100), 0, 100);
-  const PctD = clamp(Math.round(pD*100), 0, 100);
-
-  return {
-    probs: { A: PctA, B: PctB, D: PctD },
-    odds:  { A: Number(oddA.toFixed(2)), B: Number(oddB.toFixed(2)), D: Number(oddD.toFixed(2)) }
-  };
-}
-
-/* ========= PARTIDAS ========= */
-function renderMatches(){
-  // patch do filtro (caso HTML antigo)
-  const filter = $("#filter-stage");
-  if(filter && !filter.dataset.patched){
-    filter.innerHTML = `
-      <option value="groups">Fase de grupos</option>
-      <option value="groupA">Grupo A</option>
-      <option value="groupB">Grupo B</option>
-      <option value="semifinal">Semifinal</option>
-      <option value="all">Todas</option>`;
-    filter.dataset.patched = "1";
-  }
-
-  const stageF=$("#filter-stage")?.value||"groups";
-  const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
-  const listGA=state.matches.filter(m=>m.stage==="groups"&&m.group==="A");
-  const listGB=state.matches.filter(m=>m.stage==="groups"&&m.group==="B");
-  const listSemi=state.matches.filter(m=>m.stage==="semifinal");
-  const listKO=state.matches.filter(m=>m.stage!=="groups");
-
-  // probabilidade organizada (V/E/D para A e B)
-  const probCell = (m)=>{
-    const { probs } = computeProbabilitiesAndOdds(m);
-    const vA = clamp(probs.A,0,100), vB = clamp(probs.B,0,100), d = clamp(probs.D,0,100);
-    return `<div style="line-height:1.2">
-      <div><b>A</b>: V ${vA}% · E ${d}% · D ${vB}%</div>
-      <div><b>B</b>: V ${vB}% · E ${d}% · D ${vA}%</div>
-    </div>`;
-  };
-
-  const makeTable=items=>`
-    <div class="table">
-      <table>
-        <thead><tr>
-          <th style="min-width:90px">Etapa/Grupo</th>
-          <th>Partida</th>
-          <th style="min-width:120px">Data/Hora</th>
-          <th style="min-width:160px">Prob V/E/D</th>
-          <th style="min-width:70px">Código</th>
-          <th style="min-width:100px">Resultado</th>
-          ${state.admin?`<th style="min-width:90px">Ações</th>`:""}
-        </tr></thead>
-        <tbody>
-          ${items.map(m=>{
-            const res = m.result==="A"?mapP[m.aId]
-                      : m.result==="B"?mapP[m.bId]
-                      : m.result==="draw"?"Empate"
-                      : m.result==="postponed"?"Adiado":"Pendente";
-            return `<tr data-id="${m.id}">
-              <td>${stageLabel(m.stage)} ${m.group?`/ ${m.group}`:""}</td>
-              <td><b>${mapP[m.aId]||"?"}</b> × <b>${mapP[m.bId]||"?"}</b></td>
-              <td>${fmtLocalDateStr(m.date)}</td>
-              <td>${probCell(m)}</td>
-              <td>${m.code||"-"}</td>
-              <td>${res}</td>
-              ${state.admin?`<td><button class="btn ghost btn-edit" data-id="${m.id}">Editar</button></td>`:""}
-            </tr>`;
-          }).join("")}
-        </tbody>
-      </table>
-    </div>`;
-
-  let html="";
-  if(stageF==="groups" || stageF==="groupA" || stageF==="all"){
-    if(stageF!=="groupB"){
-      html += `<div class="card" style="margin-bottom:12px"><h3>F. Grupos – Grupo A</h3>${makeTable(listGA)}</div>`;
-    }
-  }
-  if(stageF==="groups" || stageF==="groupB" || stageF==="all"){
-    if(stageF!=="groupA"){
-      html += `<div class="card" style="margin-bottom:12px"><h3>F. Grupos – Grupo B</h3>${makeTable(listGB)}</div>`;
-    }
-  }
-  if(stageF==="semifinal" || stageF==="all"){
-    const onlySemi = stageF==="semifinal" ? listSemi : listKO;
-    html += `<div class="card"><h3>${stageF==="semifinal"?"Semifinais":"Mata-mata (Semis/Final/3º)"}</h3>${makeTable(onlySemi)}</div>`;
-  }
-
-  const box=$("#matches-list");
-  if(box){
-    box.innerHTML=html || `<div class="card"><p class="muted">Nenhuma partida para o filtro atual.</p></div>`;
-    if(state.admin){ $$(".btn-edit").forEach(b=> b.onclick=()=>loadMatchToForm(b.dataset.id)); }
-  }
-}
-$("#filter-stage")?.addEventListener("change", renderMatches);
-
-// Scroll para o gerenciador após clicar em “Editar”
-async function loadMatchToForm(id){
-  const m=state.matches.find(x=>x.id===id); if(!m) return;
-  $("#match-id").value=m.id; $("#match-a").value=m.aId||""; $("#match-b").value=m.bId||"";
-  $("#match-stage").value=m.stage||"groups"; $("#match-group").value=m.group||"";
-  $("#match-date").value=m.date||""; $("#match-date-orig").value=m.date||"";
-  $("#match-date").dataset.dirty="false"; $("#match-date").oninput=()=> $("#match-date").dataset.dirty="true";
-  $("#match-code").value=m.code||""; $("#match-result").value=m.result||"";
-  showTab("partidas");
-  // espera render e rola para o card de admin
-  await sleep(60);
-  const adminCard = $("#admin-matches");
-  if(adminCard){ adminCard.scrollIntoView({ behavior:"smooth", block:"start" }); }
-}
-
-/* salvar/limpar/excluir partida */
-$("#match-form")?.addEventListener("submit", async (e)=>{
-  e.preventDefault();
-  if(!(await requireAdmin())) return;
-
-  const id = $("#match-id").value || null;
-  const aId=$("#match-a").value, bId=$("#match-b").value;
-  const stage=$("#match-stage").value, group=$("#match-group").value||null;
-  const code=$("#match-code").value.trim()||null;
-  const result=($("#match-result").value||null)||null;
-
-  let date = $("#match-date").dataset.dirty==="true" ? ($("#match-date").value||null) : ($("#match-date-orig").value||null);
-
-  const payload = { aId, bId, stage, group, code, result: result||null };
-  if(date) payload.date = date; else payload.date = null;
-
-  if(id){
-    // se mudou resultado, permite re-anunciar
-    const before = state.matches.find(m=>m.id===id)?.result || null;
-    const allowReannounce = (before!==result);
-    await updateDoc(doc(db,"matches",id), { ...payload, ...(allowReannounce?{resultAnnounced:false}:{}) });
-  }else{
-    await addDoc(collection(db,"matches"), payload);
-  }
-  $("#match-form").reset();
-  $("#match-date").dataset.dirty="false";
-  alert("Partida salva!");
-});
-
-$("#match-reset")?.addEventListener("click", (e)=>{
-  e.preventDefault();
-  $("#match-form").reset();
-  $("#match-date").dataset.dirty="false";
-  $("#match-id").value="";
-});
-$("#match-delete")?.addEventListener("click", async ()=>{
-  if(!(await requireAdmin())) return;
-  const id=$("#match-id").value;
-  if(!id) return alert("Nenhuma partida carregada.");
-  if(!(await confirmAction("Excluir esta partida?"))) return;
-  await deleteDoc(doc(db,"matches",id));
-  $("#match-form").reset();
-  $("#match-date").dataset.dirty="false";
-  $("#match-id").value="";
-  alert("Partida excluída.");
-});
-
-/* ========= POSTAGENS ========= */
-$("#post-form")?.addEventListener("submit", async (e)=>{
-  e.preventDefault();
-  if(!auth.currentUser) return alert("Entre para publicar.");
-  const title=$("#post-title").value.trim(); const body=$("#post-body").value.trim();
-  await addDoc(collection(db,"posts"),{
-    title, body, createdAt:serverTimestamp(),
-    author: state.profile?.displayName || auth.currentUser?.displayName || auth.currentUser?.email || "admin",
-    authorEmail: auth.currentUser?.email || ""
-  });
-  $("#post-form").reset();
-});
-
-// item com zebra e botão 🗑️ intuitivo
-function renderPostItem(p, idx=0){
-  const by=`${p.authorEmail||""} — ${p.author||""}`;
-  const tone = (idx%2===0) ? "#101720" : "#0f141d";
-  return `<div class="post" data-id="${p.id}" style="background:${tone}; padding:14px 0; border-bottom:1px solid #202a39">
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
-      <div style="min-width:0">
-        <h3 style="margin:0 0 6px 0">${p.title}</h3>
-        <p class="muted" style="margin:0 0 4px 0">${by} · ${fmtTS(p.createdAt)}</p>
-        <p style="margin:0">${(p.body||"").replace(/\n/g,"<br>")}</p>
-      </div>
-      ${state.admin?`<button class="btn danger small btn-del-post" data-id="${p.id}" title="Apagar comunicado">🗑️</button>`:""}
-    </div>
-  </div>`;
 }
 function renderPosts(){
-  const html=state.posts.map((p,i)=>renderPostItem(p,i)).join("");
-  if($("#posts-list")){
-    $("#posts-list").innerHTML = html || `<p class="muted">Sem comunicados.</p>`;
-    if(state.admin){
-      $$(".btn-del-post").forEach(b=> b.onclick=async ()=>{
-        if(!(await confirmAction("Apagar este comunicado?"))) return;
-        if(!(await requireAdmin())) return;
-        await deleteDoc(doc(db,"posts",b.dataset.id));
-      });
-    }
+  $("#posts-list") && ($("#posts-list").innerHTML = state.posts.map(renderPostItem).join("") || `<p class="muted">Sem comunicados.</p>`);
+  if(state.admin){
+    $$("#posts-list .btn-del-post").forEach(b=>{
+      b.onclick=async ()=>{ if(!confirm("Apagar este comunicado?"))return; await deleteDoc(doc(db,"posts",b.dataset.id)); };
+    });
   }
 }
-
-/* ========= CHAT (RTDB) ========= */
-let rtdb=null, rtdbRefChat=null, rtdbApi=null;
-async function initRealtimeChat(){
-  if(rtdb) return; // só configura uma vez
-  rtdbApi = await import("https://www.gstatic.com/firebasejs/12.2.1/firebase-database.js");
-  const { getDatabase, ref, onValue } = rtdbApi;
-  rtdb = getDatabase(app);
-  rtdbRefChat = ref(rtdb, "chat");
-
-  // Assina sempre (logado ou não), para exibir sem precisar enviar
-  onValue(rtdbRefChat, (snap)=>{
-    const val = snap.val() || {};
-    const list = Object.entries(val).map(([id,v])=>({ id, ...v }));
-    const now = Date.now();
-    state.chat = list
-      .filter(m => !m.expireAt || m.expireAt > now)
-      .sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
-    renderChat();
+function bindPostForm(){
+  const form = $("#post-form");
+  form?.addEventListener("submit", async (e)=>{
+    e.preventDefault();
+    const title = $("#post-title").value.trim();
+    const body  = $("#post-body").value.trim();
+    if(!title || !body) return;
+    await addDoc(collection(db,"posts"), {
+      title, body,
+      authorUid: state.user?.uid||null,
+      authorEmail: state.user?.email||null,
+      authorName: state.user?.displayName||null,
+      createdAt: serverTimestamp()
+    });
+    form.reset();
   });
 }
-$("#chat-form")?.addEventListener("submit", async (e)=>{
-  e.preventDefault();
-  if(!auth.currentUser){ alert("Entre para enviar mensagens."); return; }
-  if(!rtdb) await initRealtimeChat();
-  const text=$("#chat-text").value.trim(); if(!text) return;
-  const { push } = rtdbApi;
-  const expireAt = Date.now() + 24*60*60*1000;
-  await push(rtdbRefChat, {
-    text,
-    author: state.profile?.displayName || auth.currentUser.displayName || auth.currentUser.email,
-    authorEmail: auth.currentUser?.email || "",
-    username: state.profile?.username || null,
-    uid: auth.currentUser.uid,
-    createdAt: Date.now(),
-    expireAt
+
+// ===== Bets
+function listenBets(){
+  if(state.listeners.bets) state.listeners.bets();
+  if(!state.user){ state.bets=[]; renderBets(); return; }
+  state.listeners.bets = onSnapshot(query(collection(db,"bets"), where("uid","==",state.user.uid)), (qs)=>{
+    state.bets = qs.docs.map(d=>({id:d.id, ...d.data()}));
+    renderBets();
+    renderMatches(); // atualiza probabilidades
   });
-  $("#chat-text").value="";
-});
-function renderChat(){
-  const html=state.chat.map((m,i)=>{
-    const who = m.username ? `${m.author} (@${m.username})` : m.author;
-    const by  = `${m.authorEmail||""} — ${who}`;
-    const when = m.createdAt ? new Date(m.createdAt).toLocaleString("pt-BR") : "—";
-    const tone = (i%2===0) ? "#101720" : "#0f141d";
-    return `<div class="chat-item" data-id="${m.id}" style="background:${tone}">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
-        <div><div class="meta">${by} · ${when}</div><div>${(m.text||"").replace(/\n/g,"<br>")}</div></div>
-        ${state.admin?`<button class="btn danger small btn-del-chat" data-id="${m.id}" title="Apagar mensagem">🗑️</button>`:""}
-      </div>
-    </div>`;
-  }).join("");
-  if($("#chat-list")){
-    $("#chat-list").innerHTML = html || `<p class="muted">Sem mensagens nas últimas 24h.</p>`;
-    if(state.admin){
-      $$(".btn-del-chat").forEach(b=>{
-        b.onclick = async ()=>{
-          if(!(await confirmAction("Apagar esta mensagem do chat?"))) return;
-          if(!(await requireAdmin())) return;
-          try{
-            const { ref, remove } = rtdbApi;
-            await remove(ref(rtdb, `chat/${b.dataset.id}`));
-          }catch(err){
-            alert("Não foi possível apagar. Verifique as regras do Realtime Database para permitir que admin apague qualquer mensagem.");
-          }
-        };
-      });
-    }
-  }
 }
 
-/* ========= APOSTAS ========= */
-function populateBetOptions(){
+function renderBetsSelect(){
   const sel = $("#bet-match");
   if(!sel) return;
-  const now = Date.now();
-  const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
-  const upcoming = state.matches
-    .filter(m => m.date && parseLocalDate(m.date)?.getTime() > now && !m.result)
-    .sort((a,b) => parseLocalDate(a.date) - parseLocalDate(b.date));
-
-  sel.innerHTML = "";
-  const opt0 = document.createElement("option");
-  opt0.value = ""; opt0.textContent = "— selecione —";
-  sel.appendChild(opt0);
-
-  upcoming.forEach(m=>{
-    const o = document.createElement("option");
-    o.value = m.id;
-    o.textContent = `${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"} • ${fmtLocalDateStr(m.date)} ${m.code?`• ${m.code}`:""}`;
-    sel.appendChild(o);
+  // partidas futuras ou sem resultado
+  const upcoming = state.matches.filter(m=>{
+    if(m.result) return false;
+    const d = parseLocalDate(m.date);
+    return !d || d.getTime() > Date.now();
   });
-}
-$("#bet-form")?.addEventListener("submit", async e=>{
-  e.preventDefault();
-  if(!auth.currentUser) return alert("Entre para apostar.");
-  await ensureWalletInit(auth.currentUser.uid);
-
-  const matchId=$("#bet-match").value;
-  const pick=$("#bet-pick").value; // "A" | "B" | "draw"
-  if(!matchId || !["A","B","draw"].includes(pick)) return alert("Selecione partida e palpite válido.");
-
-  const m=state.matches.find(x=>x.id===matchId);
-  const dt=m?.date?parseLocalDate(m.date):null;
-  if(!m || !dt) return alert("Partida inválida.");
-  if(Date.now()>=dt.getTime()) return alert("Prazo encerrado para essa partida.");
-
-  // uma aposta por usuário/partida
-  const exists = state.bets.find(b=> b.uid===auth.currentUser.uid && b.matchId===matchId);
-  if(exists) return alert("Você já apostou nessa partida.");
-
-  const { odds, probs } = computeProbabilitiesAndOdds(m);
-  const oddSnap = pick==="A" ? odds.A : pick==="B" ? odds.B : odds.D;
-
-  await addDoc(collection(db,"bets"),{
-    uid:auth.currentUser.uid, userEmail:auth.currentUser.email,
-    matchId, pick,
-    createdAt:serverTimestamp(),
-    settled:false,
-    odd: oddSnap,
-    probsSnap: probs
-  });
-
-  $("#bet-form").reset();
-  alert(`Aposta registrada! Odd ${oddSnap}x`);
-});
-
-async function settleFinishedMatchesBets(){
-  const finals = state.matches.filter(m=>["A","B","draw"].includes(m.result));
-  for(const m of finals){
-    const betsSnap = await getDocs(query(colBets, where("matchId","==", m.id), where("settled","==", false)));
-    if(betsSnap.empty) continue;
-
-    const ops = betsSnap.docs.map(bd => runTransaction(db, async tx=>{
-      const betRef=doc(db,"bets",bd.id); const betSnap=await tx.get(betRef);
-      if(!betSnap.exists()) return;
-      const bet=betSnap.data(); if(bet.settled) return;
-
-      const won = bet.pick === m.result;
-      const walletRef = doc(db,"wallets", bet.uid);
-      const walSnap=await tx.get(walletRef);
-      const current = walSnap.exists()? (walSnap.data().points||0) : 0;
-
-      // recompensa: odd * 2 pts (mínimo 1) se acertar; 0 se errar
-      const odd = typeof bet.odd === "number" ? bet.odd : 1.5;
-      const add = won ? Math.max(1, Math.round(odd * 2)) : 0;
-
-      if(!walSnap.exists()){
-        tx.set(walletRef, { points: 6 + add, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
-      }else{
-        tx.update(walletRef, { points: current + add, updatedAt: serverTimestamp() });
-      }
-      tx.update(betRef,{ settled:true, won, settledAt:serverTimestamp(), reward:add });
-    }));
-    await Promise.allSettled(ops);
-  }
-}
-function renderBets(){
-  const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
-  const mapM=Object.fromEntries(state.matches.map(m=>[m.id,m]));
-  const my = auth.currentUser ? state.bets.filter(b=> b.uid===auth.currentUser.uid) : [];
-  const rows = my.map(b=>{
-    const m=mapM[b.matchId]; const vs=m?`${mapP[m.aId]} × ${mapP[m.bId]}`:"?";
-    const res = b.settled ? (b.won?`Acertou (+${b.reward||0})`:"Errou") : "Pendente";
-    return `<tr><td>${vs}</td><td>${stageLabel(m?.stage)} ${m?.group||""}</td><td>${b.pick}</td><td>${res}</td></tr>`;
+  sel.innerHTML = `<option value="">— selecione —</option>` + upcoming.map(m=>{
+    const pn = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
+    return `<option value="${m.id}">${pn[m.aId]||"?"} × ${pn[m.bId]||"?"} — ${stageLabel(m.stage)}${m.group?` ${m.group}`:""}</option>`;
   }).join("");
-  if($("#bets-list")){
-    $("#bets-list").innerHTML = rows || `<tr><td colspan="4">Sem apostas.</td></tr>`;
-  }
-}
-function renderWallet(){
-  if(!auth.currentUser) return;
-  const docWal = state.wallets.find(w=> w.id===auth.currentUser.uid);
-  const pts = docWal?.points||0;
-  if($("#wallet-points")) $("#wallet-points").textContent = pts;
 }
 
-/* ========= ADMIN: Semis, Seed, Reset e utilidades ========= */
-$("#semi-autofill")?.addEventListener("click", ()=>{
-  const stats=statsFromMatches(); const groups={A:[],B:[]};
-  for(const id in stats){ const s=stats[id]; (groups[s.group]||[]).push(s); }
-  const sort=a=>a.sort((x,y)=> y.points-x.points||y.wins-x.wins||x.name.localeCompare(y.name));
-  sort(groups.A); sort(groups.B);
-  const a1=groups.A[0], a2=groups.A[1], b1=groups.B[0], b2=groups.B[1];
-  if(a1&&b2){ $("#semi1-a").value=a1.id; $("#semi1-b").value=b2.id; }
-  if(b1&&a2){ $("#semi2-a").value=b1.id; $("#semi2-b").value=a2.id; }
-  alert("Semifinais preenchidas (clique em Criar Semifinais para confirmar).");
-});
-$("#semi-save")?.addEventListener("click", async ()=>{
-  if(!(await requireAdmin())) return;
-  const pairs=[
-    { a:$("#semi1-a").value, b:$("#semi1-b").value, code: $("#semi-code").value?$("#semi-code").value+"-1":"SF-1" },
-    { a:$("#semi2-a").value, b:$("#semi2-b").value, code: $("#semi-code").value?$("#semi-code").value+"-2":"SF-2" },
-  ];
-  for(const p of pairs){ if(!p.a||!p.b) continue;
-    await addDoc(collection(db,"matches"),{ aId:p.a,bId:p.b,stage:"semifinal",date:null,group:null,code:p.code,result:null });
+function renderBets(){
+  const tbody = $("#bets-list");
+  if(!tbody) return;
+  if(!state.bets.length){
+    tbody.innerHTML = `<tr><td colspan="4" class="muted">Sem apostas.</td></tr>`;
+    return;
   }
-  alert("Semifinais criadas. Ajuste datas/resultados em Partidas.");
-});
-function renderAdminSemisList(){
-  const list=state.matches.filter(m=>m.stage==="semifinal");
   const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
-  const rows=list.map(m=>`<tr><td>${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}</td><td>${fmtLocalDateStr(m.date)}</td><td>${m.code||"-"}</td><td>${m.result||"Pendente"}</td></tr>`).join("");
-  const html=`<div class="table"><table><thead><tr><th>Semifinal</th><th>Data</th><th>Código</th><th>Resultado</th></tr></thead><tbody>${rows||"<tr><td colspan='4'>Nenhuma semifinal cadastrada.</td></tr>"}</tbody></table></div>`;
-  $("#semi-list") && ($("#semi-list").innerHTML=html);
+  const rows = state.bets.map(b=>{
+    const m = state.matches.find(x=>x.id===b.matchId);
+    const name = m ? `${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}` : "(partida removida)";
+    const etapa = m ? `${m.stage==="groups" ? `F. Grupos${m.group?` ${m.group}`:""}` : stageLabel(m.stage)}` : "—";
+    return `<tr>
+      <td>${name}</td>
+      <td>${etapa}</td>
+      <td>${b.pick==="A"?"Vitória A": b.pick==="B"?"Vitória B":"Empate"}</td>
+      <td>${b.status||"pendente"}</td>
+    </tr>`;
+  }).join("");
+  tbody.innerHTML = rows;
 }
 
-// Botões utilitários: “Re-anunciar resultados” e “Normalizar carteiras”
-(function injectAdminTools(){
-  const toolsCard = $("#admin .card:nth-of-type(2)");
-  if(!toolsCard) return;
-  const wrap = document.createElement("div");
-  wrap.className = "row";
-  wrap.style.marginTop = "10px";
-  wrap.innerHTML = `
-    <button id="reanounce-results" class="btn ghost">Re-anunciar resultados</button>
-    <button id="fix-wallets" class="btn ghost">Normalizar Carteiras (mín. 6)</button>
-  `;
-  toolsCard.appendChild(wrap);
-
-  $("#reanounce-results")?.addEventListener("click", async ()=>{
-    if(!(await requireAdmin())) return;
-    if(!(await confirmAction("Relançar posts de TODOS os resultados finalizados?"))) return;
-    const finals = await getDocs(query(colMatches, where("result","in", ["A","B","draw"])));
-    await Promise.allSettled(finals.docs.map(d => updateDoc(doc(db,"matches", d.id), { resultAnnounced:false })));
-    alert("Resultados serão re-anunciados (aguarde alguns segundos).");
+function bindBetForm(){
+  const form = $("#bet-form");
+  form?.addEventListener("submit", async (e)=>{
+    e.preventDefault();
+    if(!state.user) return alert("Entre com Google para apostar.");
+    const matchId = $("#bet-match").value;
+    const pick = $("#bet-pick").value;
+    if(!matchId || !pick) return;
+    // grava aposta; (não descontamos pontos na entrada; prêmio +2 se acertar)
+    await addDoc(collection(db,"bets"), {
+      uid: state.user.uid,
+      matchId, pick,
+      createdAt: serverTimestamp(),
+      status: "pendente"
+    });
+    alert("Aposta registrada!");
+    form.reset();
   });
+}
 
-  $("#fix-wallets")?.addEventListener("click", async ()=>{
-    if(!(await requireAdmin())) return;
-    if(!confirm("Forçar carteira mínima de 6 pts para todos?")) return;
-    const qs = await getDocs(collection(db,"wallets"));
-    await Promise.allSettled(qs.docs.map(d => runTransaction(db, async (tx)=>{
-      const ref = doc(db,"wallets", d.id);
-      const snap = await tx.get(ref);
-      if(!snap.exists()) return;
-      const cur = snap.data() || {};
-      const pts = typeof cur.points === "number" ? cur.points : 0;
-      if(pts < 6){
-        tx.update(ref, { points: 6, updatedAt: serverTimestamp() });
-      }
-    })));
-    alert("Carteiras normalizadas (mínimo 6).");
-  });
-})();
-
-/* ========= ADIAMENTO AUTOMÁTICO ========= */
-async function autoPostponeOverdueMatches(){
-  if(!state.admin) return;
-  const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
-  const tasks=[];
-  for(const m of state.matches){
-    if(!m?.date) continue;
-    const dt=parseLocalDate(m.date); if(!dt) continue;
-    if(m?.result) continue; // já tem resultado/adiado
-    const due=dt.getTime()+24*60*60*1000;
-    if(Date.now()<due) continue;
-
-    tasks.push(runTransaction(db, async tx=>{
-      const ref=doc(db,"matches",m.id); const snap=await tx.get(ref);
-      if(!snap.exists()) return;
-      const cur=snap.data(); if(cur?.result||cur?.postponedNotice) return;
-      const d=parseLocalDate(cur.date); if(!d) return; if(Date.now()<d.getTime()+24*60*60*1000) return;
-
-      tx.update(ref,{ result:"postponed", postponedAt:serverTimestamp(), postponedNotice:true, resultAnnounced:false });
-
-      const aName=mapP[cur.aId]||"?"; const bName=mapP[cur.bId]||"?";
-      const postRef = doc(collection(db,"posts"));
-      tx.set(postRef,{ title:`Partida adiada: ${aName} × ${bName}`,
-        body:`A partida ${cur.code?`(${cur.code}) `:""}${aName} × ${bName}, marcada para ${fmtLocalDateStr(cur.date)}, foi automaticamente marcada como **ADIADA** (24h após o prazo sem resultado).`,
-        createdAt:serverTimestamp(), author:"Sistema", authorEmail:"" });
-    }));
+async function settleBetsIfFinished(){
+  // paga apostas se a partida já tiver resultado (A/B/draw)
+  const myBets = state.bets;
+  const write = writeBatch(db);
+  let changed = false;
+  for(const b of myBets){
+    if(b.status && b.status!=="pendente") continue;
+    const m = state.matches.find(x=>x.id===b.matchId);
+    if(!m || !m.result || m.result==="postponed") continue;
+    const correct = (b.pick==="draw" && m.result==="draw") || (b.pick==="A" && m.result==="A") || (b.pick==="B" && m.result==="B");
+    write.update(doc(db,"bets",b.id), { status: correct?"ganhou":"perdeu", settledAt: serverTimestamp() });
+    if(correct && state.user && state.user.uid===b.uid){
+      // +2 pontos
+      write.set(doc(db,"wallets",state.user.uid), { points: Math.max(6, state.wallet) + 2, updatedAt: serverTimestamp() }, { merge: true });
+    }
+    changed = true;
   }
-  if(tasks.length) await Promise.allSettled(tasks);
+  if(changed) await write.commit();
 }
 
-/* ========= SEMIS AUTO ========= */
-async function checkAndAutoCreateSemis(){
-  const groupMatches=state.matches.filter(m=>m.stage==="groups");
-  if(groupMatches.length===0) return;
-  const allDone=groupMatches.every(m=>["A","B","draw"].includes(m.result));
-  if(!allDone) return;
+// ===== Semifinais auto
+async function autoCreateSemisIfDone(){
+  // Se todas partidas de grupos têm resultado (ou adiadas), define semis (1ºA×2ºB e 1ºB×2ºA) e posta
+  const groupsDone = ["A","B"].every(g=>{
+    const ms = state.matches.filter(m=>m.stage==="groups" && m.group===g);
+    if(!ms.length) return false;
+    return ms.every(m=> !!m.result); // pendente? então não
+  });
+  if(!groupsDone) return;
 
-  const existingSemis=state.matches.filter(m=>m.stage==="semifinal");
-  if(existingSemis.length>=2) return;
+  // já existem semis?
+  const hasSemi = state.matches.some(m=> m.stage==="semifinal");
+  if(hasSemi) return;
 
-  const stats=statsFromMatches(); const byGroup={A:[],B:[]};
-  Object.values(stats).forEach(s=>(byGroup[s.group]||[]).push(s));
-  const sort=a=>a.sort((x,y)=> y.points-x.points||y.wins-x.wins||x.name.localeCompare(y.name));
-  sort(byGroup.A); sort(byGroup.B);
-  const a1=byGroup.A[0], a2=byGroup.A[1], b1=byGroup.B[0], b2=byGroup.B[1];
+  // calcula top2
+  const rank = g=>{
+    const ps = state.players.filter(p=>p.group===g).map(p=>{
+      const s = computePlayerStats(p.id);
+      return { id:p.id, name:p.name, ...s };
+    }).sort((a,b)=>{
+      if(b.points!==a.points) return b.points-a.points;
+      if(b.wins!==a.wins) return b.wins-a.wins;
+      return a.name.localeCompare(b.name);
+    });
+    return ps.slice(0,2).map(x=>x.id);
+  };
+  const [a1,a2] = rank("A");
+  const [b1,b2] = rank("B");
   if(!(a1&&a2&&b1&&b2)) return;
 
-  const pairs=[ {a:a1.id,b:b2.id,code:"SF-1"}, {a:b1.id,b:a2.id,code:"SF-2"} ];
+  // cria semis
+  const m1 = { aId:a1, bId:b2, stage:"semifinal", group:null, code:"SF1", result:null, date:null };
+  const m2 = { aId:b1, bId:a2, stage:"semifinal", group:null, code:"SF2", result:null, date:null };
+  await addDoc(collection(db,"matches"), { ...m1, createdAt: serverTimestamp() });
+  await addDoc(collection(db,"matches"), { ...m2, createdAt: serverTimestamp() });
+
+  // post
   const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
-  for(const p of pairs){ await addDoc(collection(db,"matches"),{ aId:p.a,bId:p.b,stage:"semifinal",date:null,group:null,code:p.code,result:null }); }
-  await addDoc(collection(db,"posts"),{ title:"Semifinais definidas",
-    body:`Semifinal 1: ${mapP[a1.id]} × ${mapP[b2.id]} (SF-1)\nSemifinal 2: ${mapP[b1.id]} × ${mapP[a2.id]} (SF-2). Boa sorte!`,
-    createdAt:serverTimestamp(), author:"Sistema", authorEmail:"" });
+  await addDoc(collection(db,"posts"), {
+    title: "Semifinais definidas",
+    body: `Semifinal 1: ${mapP[a1]} × ${mapP[b2]}\nSemifinal 2: ${mapP[b1]} × ${mapP[a2]}`,
+    createdAt: serverTimestamp()
+  });
 }
 
-/* ========= BUSCA JOGADOR ========= */
-$("#player-search-btn")?.addEventListener("click", ()=>{
-  const q=($("#player-search")?.value||"").toLowerCase();
-  const found=state.players.find(p=>p.name.toLowerCase().includes(q));
-  if(found) openPlayerProfile(found.id); else alert("Jogador não encontrado.");
+// ===== Posts automáticos p/ partidas concluídas (recria se apagarem)
+async function ensurePostForMatch(matchId){
+  const exists = state.posts.some(p=> p.matchId===matchId);
+  if(exists) return;
+  const m = state.matches.find(x=>x.id===matchId);
+  if(!m || !m.result || m.result==="postponed") return;
+  const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
+  const body = m.result==="draw"
+    ? `Empate entre ${mapP[m.aId]} e ${mapP[m.bId]}.`
+    : `Vitória de ${m.result==="A"?mapP[m.aId]:mapP[m.bId]} contra ${m.result==="A"?mapP[m.bId]:mapP[m.aId]}.`;
+  await addDoc(collection(db,"posts"), { title:"Resultado da partida", body, matchId, createdAt: serverTimestamp() });
+}
+async function autoCreatePostsForFinished(){
+  for(const m of state.matches){
+    if(m.result && m.result!=="postponed"){
+      const has = state.posts.some(p=> p.matchId===m.id);
+      if(!has){ await ensurePostForMatch(m.id); }
+    }
+  }
+}
+
+// ===== Adiamento automático (24h após horário definido)
+async function autoPostponeOverdue(){
+  const now = Date.now();
+  for(const m of state.matches){
+    if(m.stage!=="groups") continue; // regra vale pra grupos
+    if(m.result) continue; // já tem resultado
+    if(!m.date) continue;  // sem data
+    const d = parseLocalDate(m.date);
+    if(!d) continue;
+    if(now - d.getTime() >= 24*60*60*1000){
+      // adia somente esta partida
+      await updateDoc(doc(db,"matches",m.id), { result:"postponed", updatedAt: serverTimestamp() });
+      await addDoc(collection(db,"posts"), {
+        title: "Partida adiada",
+        body: `A partida ${m.code||""} (${m.stage==="groups" ? `F. Grupos${m.group?` ${m.group}`:""}`: stageLabel(m.stage)}) foi adiada por expirar o prazo sem resultado.`,
+        matchId: m.id,
+        createdAt: serverTimestamp()
+      });
+    }
+  }
+}
+
+// ===== Admin: Seed
+function bindSeed(){
+  $("#seed-btn")?.addEventListener("click", async ()=>{
+    if(!confirm("Criar seed de exemplo (jogadores + partidas de grupos)?")) return;
+
+    // jogadores se não existirem
+    const namesA = ["Hugo", "Eudison", "Rhuan", "Luís Felipe", "Yuri"];
+    const namesB = ["Kelvin", "Marcos", "Davi", "Alyson", "Wemerson"];
+    const all = [...namesA.map(n=>({name:n,group:"A"})), ...namesB.map(n=>({name:n,group:"B"}))];
+
+    const pSnap = await getDocs(collection(db,"players"));
+    if(pSnap.empty){
+      const b = writeBatch(db);
+      all.forEach(p=>{
+        const id = doc(collection(db,"players")).id;
+        b.set(doc(db,"players",id), { name:p.name, group:p.group, createdAt: serverTimestamp() });
+      });
+      await b.commit();
+    }
+
+    // partidas de grupos (round-robin com folga 5 jogadores)
+    // A
+    const a = namesA; const b = namesB;
+    const allPlayersSnap = await getDocs(collection(db,"players"));
+    const idByName = {};
+    allPlayersSnap.forEach(d=> idByName[d.data().name] = d.id);
+
+    const roundsA = [
+      // Folga: Hugo
+      [{a:"Eudison",b:"Yuri"},{a:"Rhuan",b:"Luís Felipe"}],
+      // Folga: Luís Felipe
+      [{a:"Hugo",b:"Yuri"},{a:"Eudison",b:"Rhuan"}],
+      // Folga: Eudison
+      [{a:"Hugo",b:"Luís Felipe"},{a:"Yuri",b:"Rhuan"}],
+      // Folga: Yuri
+      [{a:"Hugo",b:"Rhuan"},{a:"Luís Felipe",b:"Eudison"}],
+      // Folga: Rhuan
+      [{a:"Hugo",b:"Eudison"},{a:"Luís Felipe",b:"Yuri"}],
+    ];
+    const roundsB = [
+      // Folga: Kelvin
+      [{a:"Marcos",b:"Wemerson"},{a:"Davi",b:"Alyson"}],
+      // Folga: Alyson
+      [{a:"Kelvin",b:"Wemerson"},{a:"Marcos",b:"Davi"}],
+      // Folga: Marcos
+      [{a:"Kelvin",b:"Alyson"},{a:"Wemerson",b:"Davi"}],
+      // Folga: Wemerson
+      [{a:"Kelvin",b:"Davi"},{a:"Alyson",b:"Marcos"}],
+      // Folga: Davi
+      [{a:"Kelvin",b:"Marcos"},{a:"Alyson",b:"Wemerson"}],
+    ];
+
+    const mSnap = await getDocs(collection(db,"matches"));
+    if(mSnap.empty){
+      const b2 = writeBatch(db);
+      let codeN = 1;
+      const addRound = (group, arr)=>{
+        arr.forEach(pair=>{
+          const da = doc(collection(db,"matches"));
+          b2.set(da, {
+            aId: idByName[pair.a], bId: idByName[pair.b],
+            stage: "groups", group,
+            date: null, code: `G${group}-${fmt2(codeN++)}`,
+            result: null, createdAt: serverTimestamp()
+          });
+        });
+      };
+      roundsA.forEach(r=> addRound("A", r));
+      roundsB.forEach(r=> addRound("B", r));
+      await b2.commit();
+    }
+
+    alert("Seed criado.");
+  });
+}
+
+// ===== Formulários: players
+function bindPlayerForm(){
+  const form = $("#player-form");
+  $("#player-reset")?.addEventListener("click", ()=> {
+    form?.reset();
+    $("#player-id").value="";
+  });
+  $("#player-delete")?.addEventListener("click", async ()=>{
+    const id = $("#player-id").value;
+    if(!id) return;
+    if(!confirm("Excluir jogador?")) return;
+    await deleteDoc(doc(db,"players",id));
+    form?.reset(); $("#player-id").value="";
+  });
+  form?.addEventListener("submit", async (e)=>{
+    e.preventDefault();
+    const id = $("#player-id").value || null;
+    const name = $("#player-name").value.trim();
+    const group = $("#player-group").value;
+    if(!name || !group) return;
+    const payload = { name, group };
+    if(!id) await addDoc(collection(db,"players"), { ...payload, createdAt: serverTimestamp() });
+    else await updateDoc(doc(db,"players",id), { ...payload, updatedAt: serverTimestamp() });
+    form.reset(); $("#player-id").value="";
+  });
+}
+
+// ===== Perfil do usuário
+function bindProfileForm(){
+  const form = $("#profile-form");
+  form?.addEventListener("submit", async (e)=>{
+    e.preventDefault();
+    if(!state.user) return;
+    const name = $("#profile-name").value.trim();
+    if(name){
+      // salva em users/{uid}
+      await setDoc(doc(db,"users",state.user.uid), {
+        displayName: name, email: state.user.email, updatedAt: serverTimestamp()
+      }, { merge: true });
+      // refletir imediatamente no chip
+      state.user.displayName = name;
+      updateAuthUI();
+      alert("Perfil salvo!");
+    }
+  });
+}
+
+function fillProfile(){
+  if(!state.user){
+    $("#profile-name") && ($("#profile-name").value = "");
+    $("#profile-email") && ($("#profile-email").value = "");
+    $("#profile-username") && ($("#profile-username").textContent = "—");
+    return;
+  }
+  $("#profile-name") && ($("#profile-name").value = state.user.displayName || "");
+  $("#profile-email") && ($("#profile-email").value = state.user.email || "");
+  $("#profile-username") && ($("#profile-username").textContent = state.user.uid.slice(0,6));
+}
+
+// ===== Admin: criar semifinais manualmente
+function bindSemis(){
+  $("#semi-autofill")?.addEventListener("click", autoCreateSemisIfDone);
+  $("#semi-save")?.addEventListener("click", async ()=>{
+    const a1=$("#semi1-a").value, b2=$("#semi1-b").value;
+    const b1=$("#semi2-a").value, a2=$("#semi2-b").value;
+    const code=$("#semi-code").value.trim()||"SF";
+    if(!(a1&&b2&&b1&&a2)) return alert("Selecione todos os jogadores.");
+    await addDoc(collection(db,"matches"), { aId:a1, bId:b2, stage:"semifinal", code:`${code}1`, result:null, group:null, createdAt: serverTimestamp() });
+    await addDoc(collection(db,"matches"), { aId:b1, bId:a2, stage:"semifinal", code:`${code}2`, result:null, group:null, createdAt: serverTimestamp() });
+    alert("Semifinais criadas.");
+  });
+}
+
+// ===== Home/Posts/Players bindings
+function bindPlayersSearch(){
+  $("#player-search-btn")?.addEventListener("click", ()=>{
+    const q = ($("#player-search")?.value||"").toLowerCase().trim();
+    if(!q){ renderPlayers(); return; }
+    const res = state.players.filter(p=> (p.name||"").toLowerCase().includes(q));
+    const mkCard = p => `
+      <div class="player-card" data-id="${p.id}">
+        <div class="avatar">${(p.name||"?").slice(0,2).toUpperCase()}</div>
+        <div class="player-meta">
+          <div class="name">${p.name||"?"}</div>
+          <div class="muted">Grupo ${p.group||"—"}</div>
+        </div>
+      </div>`;
+    $("#players-cards-A") && ($("#players-cards-A").innerHTML = res.filter(p=>p.group==="A").map(mkCard).join("") || "<p class='muted'>Sem jogadores.</p>");
+    $("#players-cards-B") && ($("#players-cards-B").innerHTML = res.filter(p=>p.group==="B").map(mkCard).join("") || "<p class='muted'>Sem jogadores.</p>");
+    $$("#players .player-card").forEach(card=>{
+      card.onclick = ()=>{
+        const id = card.dataset.id;
+        renderPlayerDetails(id);
+      };
+    });
+  });
+}
+
+// ===== Auth listeners
+function bindAuthButtons(){
+  $("#btn-open-login")?.addEventListener("click", loginGoogle);
+  $("#btn-logout")?.addEventListener("click", logout);
+}
+
+onAuthStateChanged(auth, async (user)=>{
+  state.user = user || null;
+  state.admin = await checkAdmin(user);
+  updateAuthUI();
+  fillProfile();
+  listenBets();
+  listenWallet(user?.uid||null);
+  if(user) await ensureWalletInit(user.uid);
 });
+
+// ===== Inicialização principal
+function init(){
+  bindAuthButtons();
+  initTabs();
+  listenPlayers();
+  listenMatches();
+  listenPosts();
+  initChat();
+  bindPostForm();
+  bindMatchForm();
+  bindPlayerForm();
+  bindProfileForm();
+  bindSemis();
+  bindSeed();
+
+  // por padrão, abrir Home
+  showTab("home");
+}
+init();
