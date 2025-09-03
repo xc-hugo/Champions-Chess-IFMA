@@ -8,9 +8,9 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css"/>
   <style>
-    /* Garantir que não haja “vão” acima da navbar */
+    /* Garantir que não haja “vão” acima da navbar e que ela não seja fixa */
     html, body { margin: 0; }
-    .tabs.topbar { margin: 0; }
+    .tabs.topbar { margin: 0; position: static !important; top: auto !important; }
 
     /* Apostas: mais espaço entre cartões */
     #apostas .grid-2 { gap: 24px; }
@@ -34,7 +34,7 @@
       <button class="tab" data-tab="posts">Post</button>
       <button class="tab" data-tab="apostas">Apostas</button>
       <button class="tab" data-tab="chat">Chat</button>
-      <!-- REMOVIDO: botão Perfil (o chip do usuário abre o perfil) -->
+      <!-- Sem botão de Perfil: o chip do usuário (direita) abre a seção Perfil -->
       <button id="tab-admin" class="tab admin-only hidden" data-tab="admin">Admin</button>
     </div>
 
