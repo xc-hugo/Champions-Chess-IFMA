@@ -1,4 +1,4 @@
-// app.js (completo) — correções: ID na coluna "Usuário" do feed + limpeza de feed sem aposta correspondente
+// app.js (completo) — Nome=displayName, Usuário=username, saldo mínimo p/ apostar, Lucro/ROI só com apostas lançadas
 // Firebase v12 (modules)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-app.js";
 import {
@@ -47,9 +47,14 @@ function fmtTime(val){
 const clamp01 = x => Math.max(0, Math.min(1, x));
 const clampPct = x => Math.max(0, Math.min(100, x));
 
-/* ID amigável do usuário (prioriza /profiles.userId ou .username, depois prefixo do e-mail, senão uid truncado) */
+/* IDs e nomes */
 function deriveUserId({ profile, email, uid }){
   return (profile?.userId) || (profile?.username) || (email ? email.split("@")[0] : (uid ? uid.slice(0,6) : "—"));
+}
+function deriveUserIdFromMaps(uid, profilesMap, walletsMap){
+  const p = profilesMap?.[uid] || {};
+  const w = walletsMap?.[uid] || {};
+  return p.userId || p.username || (p.email || w.email || uid).split("@")[0];
 }
 
 /* ==================== Config ==================== */
@@ -67,7 +72,7 @@ const auth = getAuth(app);
 const db   = getFirestore(app);
 const rtdb = getDatabase(app);
 
-// Admins fixos (opcional) — coloque seu e-mail aqui para garantir acesso admin:
+// Admins fixos (opcional)
 const ADMIN_EMAILS = [
   // "seu.email@ifma.edu.br",
 ];
@@ -92,13 +97,13 @@ const state = {
   },
   feedRowsData: {},
   rankings: { bestByWins: [], mostPoints: [], mostBets: [], profilesMap: {}, walletsMap: {} },
-  tournamentId: 1,   // evitamos depender de /settings para não esbarrar nas rules
+  tournamentId: 1,
   winners: [],
 };
 
 let _bootShown = false;
 let _autoPostponeLock = false;
-let undoState = null; // undo da aposta
+let undoState = null;
 
 /* ==================== Abas ==================== */
 function showTab(tab){
@@ -136,21 +141,17 @@ async function loginGoogle(){
 }
 async function logout(){ await signOut(auth); }
 
-/** Deteção de admin sem tentar criar nada nas coleções **/
 function applyAdminUI(){
-  // mostra/esconde .admin-only
   $$(".admin-only").forEach(el => el.classList.toggle("hidden", !state.admin));
-  // remove blocos que não devem existir
   $("#admin-matches-admin")?.remove();
   $("#seed-btn")?.closest(".row")?.remove();
   organizeAdminTools();
   updateAuthUI();
-  renderMatches();  // para mostrar botões Editar se admin
+  renderMatches();
   renderPosts();
 }
 
 function listenAdmin(user){
-  // limpa listeners anteriores
   if(typeof state.listeners.admin === "function"){ state.listeners.admin(); state.listeners.admin=null; }
   if(!user){ state.admin=false; applyAdminUI(); return; }
 
@@ -164,7 +165,6 @@ function listenAdmin(user){
     applyAdminUI();
   };
 
-  // Firestore: ler SOMENTE /admins/{uid} (autorizado pelas suas rules)
   const adminsRef = doc(db,"admins", user.uid);
   const unsubFS = onSnapshot(adminsRef, (snap)=>{
     const d = snap.exists() ? snap.data() : null;
@@ -172,14 +172,12 @@ function listenAdmin(user){
     compute();
   }, (_e)=>{ fsActive=false; compute(); });
 
-  // RTDB: /admins/{uid}/active (se você usar esse caminho no RTDB)
   const rtdbRefActive = rtdbRef(rtdb, `admins/${user.uid}/active`);
   const unsubRT = onValue(rtdbRefActive, (snap)=>{
     rtdbActive = snap.exists() && snap.val() === true;
     compute();
   }, (_e)=>{ rtdbActive = false; compute(); });
 
-  // custom claims
   user.getIdTokenResult(true).then(tk=>{
     byClaim = !!tk.claims?.admin; compute();
   }).catch(()=>{ byClaim=false; compute(); });
@@ -194,6 +192,25 @@ function setChatEnabled(enabled){
   input && (input.disabled = !enabled);
   form && (form.querySelectorAll("input,button,textarea").forEach(el=> el.disabled = !enabled));
   $("#chat-login-hint")?.classList.toggle("hidden", !!enabled);
+}
+
+/* habilita/desabilita aposta conforme login e saldo */
+function updateBetFormEnabled(){
+  const form = $("#bet-form");
+  if(!form) return;
+  const all = form.querySelectorAll("select,input,textarea,button");
+  const submit = form.querySelector('button[type="submit"], .btn[type="submit"], .btn-primary');
+  const can = !!state.user && (state.wallet >= BET_COST);
+  all.forEach(el=>{
+    if(el.type === "submit") return; // submit tratado separadamente
+    el.disabled = !state.user ? true : el.disabled && !can ? true : el.disabled && can ? false : el.disabled;
+  });
+  if(submit) submit.disabled = !can;
+  const hint = ensureOddsHint();
+  if(hint){
+    if(!state.user) hint.textContent = "Entre com Google para apostar.";
+    else if(state.wallet < BET_COST) hint.textContent = `Saldo insuficiente para apostar (precisa de ${BET_COST} CCIP).`;
+  }
 }
 
 function updateAuthUI(){
@@ -221,12 +238,13 @@ function updateAuthUI(){
     setChatEnabled(false);
   }
 
-  // aposta só logado
+  // aposta só logado (e com saldo — reforço de UI)
   const betForm = $("#bet-form");
   betForm && betForm.querySelectorAll("input,select,button,textarea").forEach(i=> i.disabled = !state.user);
+  updateBetFormEnabled();
 }
 
-/* ==================== Perfil (usa /profiles de acordo com suas rules) ==================== */
+/* ==================== Perfil ==================== */
 async function loadProfileIntoState(uid){
   try{
     const snap = await getDoc(doc(db,"profiles", uid));
@@ -292,7 +310,6 @@ async function ensureWalletInit(uid){
       }
     });
   }catch(e){
-    // fallback "best effort"
     try{
       const snap = await getDoc(refWal);
       if(!snap.exists()){
@@ -301,18 +318,30 @@ async function ensureWalletInit(uid){
     }catch(err){ console.error("ensureWalletInit fallback:", err); }
   }
 }
+
+/* >>>> NOVO CÁLCULO DE ESTATÍSTICAS DA CARTEIRA <<<<
+   - totalStaked: soma de todos os stakes (tudo que já foi debitado do saldo)
+   - settledStaked: soma de stakes apenas de apostas com status lançado (ganhou/perdeu/adiada)
+   - returns: soma de payouts recebidos (apenas quando ganhou)
+   - profit/ROI calculados APENAS sobre settledStaked (pendentes não entram)
+*/
 function computeMyBetStats(){
-  let total=0, wins=0, staked=0, returns=0;
+  let total=0, wins=0, totalStaked=0, settledStaked=0, returns=0;
   for(const b of state.bets){
     total++;
-    staked += b.stake||BET_COST;
+    const stake = b.stake || BET_COST;
+    totalStaked += stake;
+    if(b.status && b.status!=="pendente"){ settledStaked += stake; }
     if(b.status==="ganhou"){
       const ret = Number.isFinite(b.settledPayout) ? b.settledPayout : (b.payoutPoints||0);
       wins++; returns += ret;
     }
   }
-  return { total, wins, staked, returns };
+  const profit = returns - settledStaked;
+  const roi = settledStaked ? Math.round((profit/settledStaked)*100) : 0;
+  return { total, wins, totalStaked, settledStaked, returns, profit, roi };
 }
+
 function renderWalletCard(){
   const card = $("#apostas .grid-2 .card:first-child");
   if(!card) return;
@@ -324,16 +353,17 @@ function renderWalletCard(){
         <tbody>
           <tr><td><b>Saldo</b></td><td><span id="wallet-ccip">${state.wallet||0}</span> CCIP</td></tr>
           <tr><td><b>Recompensa base por acerto</b></td><td>+${BET_COST} CCIP (mín.)</td></tr>
-          <tr><td><b>Total apostado</b></td><td>${my.staked} CCIP</td></tr>
+          <tr><td><b>Total apostado</b></td><td>${my.totalStaked} CCIP</td></tr>
           <tr><td><b>Retornos recebidos</b></td><td>${my.returns} CCIP</td></tr>
-          <tr><td><b>Lucro líquido</b></td><td>${my.returns - my.staked} CCIP</td></tr>
+          <tr><td><b>Lucro líquido</b></td><td>${my.profit} CCIP</td></tr>
           <tr><td><b>Apostas</b></td><td>${my.total} (${my.wins} ganhas)</td></tr>
-          <tr><td><b>ROI</b></td><td>${my.total? Math.round(((my.returns - my.staked)/my.staked)*100):0}%</td></tr>
+          <tr><td><b>ROI</b></td><td>${my.roi}%</td></tr>
         </tbody>
       </table>
     </div>
   `;
   $("#wallet-points") && ($("#wallet-points").textContent = String(state.wallet));
+  updateBetFormEnabled(); // reforça bloqueio do botão se saldo insuficiente
 }
 
 /* ==================== Chat (RTDB) ==================== */
@@ -605,17 +635,16 @@ function listenMatches(){
     buildOrMountStatusFilter();
     renderMatches(); renderTables(); renderBetsSelect(); renderHome();
 
-    // Ações que escrevem no Firestore — apenas se admin
     if(state.admin && !_autoPostponeLock){
       _autoPostponeLock = true;
       try { await autoPostponeOverdue(); } finally { _autoPostponeLock = false; }
     }
     if(state.admin) await autoCreateSemisIfDone();
-    if(state.admin) await ensureChampionRecorded();  // grava winners só se admin
+    if(state.admin) await ensureChampionRecorded();
 
-    settleBetsIfFinished();    // minhas apostas (só mexe em /wallets do próprio user)
-    updateFeedStatuses();      // feed RTDB (leitura)
-    rebuildRankings();         // só leituras
+    settleBetsIfFinished();
+    updateFeedStatuses();
+    rebuildRankings();
   });
 }
 function renderMatches(){
@@ -627,7 +656,6 @@ function renderMatches(){
   const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
   let items = state.matches.slice();
 
-  // etapa
   items = items.filter(m=>{
     if(stageFilter==="all") return true;
     if(stageFilter==="groups") return m.stage==="groups";
@@ -636,7 +664,6 @@ function renderMatches(){
     if(stageFilter==="semifinal") return m.stage==="semifinal";
     return true;
   });
-  // status
   items = items.filter(m=> (statusFilter==="all") ? true : matchStatus(m)===statusFilter);
 
   const resLabel = (m)=>{
@@ -865,7 +892,7 @@ function bindPostForm(){
   });
 }
 
-/* ==================== Apostas (minhas + UI) ==================== */
+/* ==================== Apostas ==================== */
 function ensureOddsHint(){
   if($("#bet-odds-hint")) return $("#bet-odds-hint");
   const form = $("#bet-form"); if(!form) return null;
@@ -879,6 +906,7 @@ function updateOddsHint(){
   const pick = $("#bet-pick")?.value;
   const hint = ensureOddsHint(); if(!hint) return;
   if(!state.user){ hint.textContent = "Entre com Google para apostar."; return; }
+  if(state.wallet < BET_COST){ hint.textContent = `Saldo insuficiente para apostar (precisa de ${BET_COST} CCIP).`; return; }
   if(!matchId || !pick){ hint.textContent = "Selecione a partida e o palpite para ver o retorno estimado."; return; }
   const m = state.matches.find(x=>x.id===matchId);
   if(!m){ hint.textContent = "Partida inválida."; return; }
@@ -1047,7 +1075,7 @@ function bindBetForm(){
     e.preventDefault(); e.stopPropagation();
     try{
       if(!state.user) return alert("Entre com Google para apostar.");
-      if(state.wallet < BET_COST) return alert("Saldo insuficiente.");
+      if(state.wallet < BET_COST) return alert("Saldo insuficiente."); // >>>> reforço de bloqueio no front
 
       const matchId = $("#bet-match").value;
       const pick = $("#bet-pick").value;
@@ -1076,7 +1104,7 @@ function bindBetForm(){
           curPts = MIN_SEED_POINTS;
           tx.set(walRef, { points: curPts, email: state.user.email||null, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }, { merge:true });
         }
-        if(curPts < BET_COST) throw new Error("Saldo insuficiente para apostar.");
+        if(curPts < BET_COST) throw new Error("Saldo insuficiente para apostar."); // >>>> bloqueio no back
 
         tx.set(betRef, {
           uid: state.user.uid, matchId, pick,
@@ -1086,7 +1114,7 @@ function bindBetForm(){
         tx.update(walRef, { points: curPts - BET_COST, updatedAt: serverTimestamp() });
       });
 
-      // ===== Dados enriquecidos para o feed (Nome e ID do usuário) =====
+      // Dados para o feed
       let profile = null;
       try{
         const ps = await getDoc(doc(db,"profiles", state.user.uid));
@@ -1099,8 +1127,8 @@ function bindBetForm(){
       await rtdbSet(rtdbRef(rtdb, `betsFeed/${feedKey}`), {
         uid: state.user.uid,
         email: state.user.email || "",
-        name: fullName,         // Nome da conta (Hugo Oliveira Silva, por ex.)
-        userId,                 // <=== ID visível (s2441)
+        name: fullName,
+        userId,                 // Usuário (username/ID curto)
         matchId,
         aName: mapP[match.aId]||"?",
         bName: mapP[match.bId]||"?",
@@ -1118,6 +1146,7 @@ function bindBetForm(){
 
       const el = $("#wallet-ccip");
       if(el){ const nowPts = Math.max(0, (parseInt(el.textContent||"0",10)||0) - BET_COST); el.textContent = String(nowPts); }
+      updateBetFormEnabled();
       e.target.reset(); updateOddsHint();
     }catch(err){
       console.error("bet add", err);
@@ -1214,7 +1243,6 @@ function updateFeedRow(key){
 }
 function updateFeedStatuses(){ Object.keys(state.feedRowsData).forEach(updateFeedRow); }
 
-/* Verifica se a aposta do feed existe no Firestore; se não existir, apaga do feed */
 async function verifyFeedBetExists(key, v){
   try{
     const snap = await getDoc(doc(db,"bets", key));
@@ -1223,11 +1251,9 @@ async function verifyFeedBetExists(key, v){
       delete state.feedRowsData[key];
     }
   }catch(err){
-    // silencioso para não quebrar UI
     console.warn("verifyFeedBetExists:", err?.message);
   }
 }
-
 function listenBetsFeed(){
   ensureBetsFeedUI();
   const tbody = $("#bets-feed-tbody");
@@ -1237,7 +1263,6 @@ function listenBetsFeed(){
   state.listeners.betsFeed = onChildAdded(ref, async (snap)=> {
     const key = snap.key; const v = snap.val();
     addFeedRow(key, v);
-    // validação: se não existir a aposta correspondente (mesmo usuário) no Firestore, remove do feed
     await verifyFeedBetExists(key, v);
   });
   onChildRemoved(ref, (snap)=> {
@@ -1288,7 +1313,7 @@ async function rebuildRankings(){
   const profilesMap = {}; profilesSnap.forEach(d=> profilesMap[d.id] = d.data());
   const walletsMap = {};  walletsSnap.forEach(d=> walletsMap[d.id] = d.data());
 
-  const byUser = {}; // uid -> {total,wins}
+  const byUser = {};
   betsSnap.forEach(d=>{
     const b = d.data(); const uid = b.uid; if(!uid) return;
     if(!byUser[uid]) byUser[uid] = { total:0, wins:0 };
@@ -1336,11 +1361,12 @@ function renderRankingsTable(){
     head.innerHTML = `<tr><th>Nome</th><th>E-mail</th><th>Usuário</th><th>Apostas Ganhas</th><th>Total</th><th>Taxa</th></tr>`;
     body.innerHTML = state.rankings.bestByWins.map(r=>{
       const email = profilesMap[r.uid]?.email || walletsMap[r.uid]?.email || "—";
-      const usr = (email||r.uid).split("@")[0];
+      const display = profilesMap[r.uid]?.displayName || niceName(r.uid, profilesMap, walletsMap); // Nome = displayName
+      const username = deriveUserIdFromMaps(r.uid, profilesMap, walletsMap); // Usuário = username
       return `<tr>
-        <td>${niceName(r.uid, profilesMap, walletsMap)}</td>
-        <td>${email}</td>
-        <td>${usr}</td>
+        <td>${esc(display)}</td>
+        <td>${esc(email)}</td>
+        <td>${esc(username)}</td>
         <td>${r.wins}</td>
         <td>${r.total}</td>
         <td>${Math.round(r.rate*100)}%</td>
@@ -1351,11 +1377,12 @@ function renderRankingsTable(){
     head.innerHTML = `<tr><th>Nome</th><th>E-mail</th><th>Usuário</th><th>CCIP</th></tr>`;
     body.innerHTML = state.rankings.mostPoints.map(r=>{
       const email = r.email || profilesMap[r.uid]?.email || "—";
-      const usr = (email||r.uid).split("@")[0];
+      const display = profilesMap[r.uid]?.displayName || niceName(r.uid, profilesMap, walletsMap);
+      const username = deriveUserIdFromMaps(r.uid, profilesMap, walletsMap);
       return `<tr>
-        <td>${niceName(r.uid, profilesMap, walletsMap)}</td>
-        <td>${email}</td>
-        <td>${usr}</td>
+        <td>${esc(display)}</td>
+        <td>${esc(email)}</td>
+        <td>${esc(username)}</td>
         <td>${r.pts}</td>
       </tr>`;
     }).join("") || `<tr><td class="muted" colspan="4">Sem dados.</td></tr>`;
@@ -1364,11 +1391,12 @@ function renderRankingsTable(){
     head.innerHTML = `<tr><th>Nome</th><th>E-mail</th><th>Usuário</th><th>Apostas</th></tr>`;
     body.innerHTML = state.rankings.mostBets.map(r=>{
       const email = profilesMap[r.uid]?.email || walletsMap[r.uid]?.email || "—";
-      const usr = (email||r.uid).split("@")[0];
+      const display = profilesMap[r.uid]?.displayName || niceName(r.uid, profilesMap, walletsMap);
+      const username = deriveUserIdFromMaps(r.uid, profilesMap, walletsMap);
       return `<tr>
-        <td>${niceName(r.uid, profilesMap, walletsMap)}</td>
-        <td>${email}</td>
-        <td>${usr}</td>
+        <td>${esc(display)}</td>
+        <td>${esc(email)}</td>
+        <td>${esc(username)}</td>
         <td>${r.total}</td>
       </tr>`;
     }).join("") || `<tr><td class="muted" colspan="4">Sem dados.</td></tr>`;
@@ -1464,8 +1492,6 @@ Motivo: expiração de 24h sem resultado registrado.`,
     }
   }
 }
-
-/** Campeões (gravar winners) — só se admin. Caso suas rules não permitam /winners, a operação é ignorada com log. */
 async function ensureChampionRecorded(){
   try{
     const finals = state.matches.filter(m=> m.stage==="final" && (m.result==="A" || m.result==="B"));
@@ -1635,7 +1661,7 @@ function listenWinners(){
     onSnapshot(query(collection(db,"winners"), orderBy("tournament","desc")), (qs)=>{
       state.winners = qs.docs.map(d=>({id:d.id, ...d.data()}));
       renderWinners(); renderWinnersRank();
-    }, (_e)=>{ /* ignorar erros de permissão para não quebrar UI */ });
+    }, (_e)=>{ /* ignorar erros */ });
   }catch(_){}
 }
 function renderWinners(){
@@ -1712,7 +1738,7 @@ function bindAuthButtons(){
 onAuthStateChanged(auth, async (user)=>{
   state.user = user || null;
 
-  listenAdmin(user);      // detecta admin sem criar nada
+  listenAdmin(user);
   if(user){
     await ensureWalletInit(user.uid);
     await loadProfileIntoState(user.uid);
