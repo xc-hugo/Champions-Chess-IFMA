@@ -92,17 +92,6 @@ function showTab(tab){
   if(el) el.classList.add("visible");
   const btn = $(`.tab[data-tab="${tab}"]`);
   if(btn) btn.classList.add("active");
-
-  // Ao abrir Apostas, garantir selects preenchidos e form habilitado
-  if(tab === "apostas"){
-    renderBetsSelect();
-    const betForm = $("#bet-form");
-    if(betForm){
-      const inputs = betForm.querySelectorAll("input,select,button,textarea");
-      inputs.forEach(i=> i.disabled = !state.user);
-    }
-  }
-
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 function initTabs(){
@@ -220,45 +209,34 @@ function updateAuthUI(){
 }
 
 /* ==================== Carteira ==================== */
+// >>> Corrigido: não "recarrega para 6" — só cria se não existir
 async function ensureWalletInit(uid){
   if(!uid) return;
   const refWal = doc(db, "wallets", uid);
   try{
-    await runTransaction(db, async (tx)=>{
-      const snap = await tx.get(refWal);
-      if(!snap.exists()){
-        tx.set(refWal, { points: MIN_SEED_POINTS, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
-      }else{
-        const cur = snap.data() || {};
-        const curPts = typeof cur.points==="number" ? cur.points : 0;
-        const newPts = Math.max(curPts, MIN_SEED_POINTS);
-        if(newPts !== curPts){
-          tx.update(refWal, { points: newPts, updatedAt: serverTimestamp() });
-        }
-      }
-    });
-  }catch(e){
-    try{
-      await setDoc(refWal, { points: MIN_SEED_POINTS, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }, { merge:true });
-    }catch(err){ console.error("ensureWalletInit fallback:", err); }
+    const snap = await getDoc(refWal);
+    if(!snap.exists()){
+      await setDoc(refWal, { points: MIN_SEED_POINTS, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+    }
+  }catch(err){
+    console.error("ensureWalletInit:", err);
   }
 }
+
+// >>> Corrigido: mostra o valor real (sem clamp)
 function listenWallet(uid){
   if(state.listeners.wallet) state.listeners.wallet();
   if(!uid){
-    state.wallet = 0;
-    const el = $("#wallet-points");
-    if (el) el.textContent = "0";
+    state.wallet=0;
+    $("#wallet-points") && ($("#wallet-points").textContent="0");
     return;
   }
   state.listeners.wallet = onSnapshot(doc(db,"wallets",uid),(snap)=>{
     const pts = (snap.exists() && typeof snap.data().points==="number") ? snap.data().points : 0;
-    state.wallet = pts; // <<< sem clamp
-    const el = $("#wallet-points");
-    if (el) el.textContent = String(state.wallet);
+    state.wallet = pts;
+    $("#wallet-points") && ($("#wallet-points").textContent = String(state.wallet));
   });
 }
-
 
 /* ==================== Chat (RTDB) ==================== */
 function initChat(){
@@ -329,10 +307,6 @@ function listenPlayers(){
   });
 }
 function renderPlayers(){
-  // esconder busca e select (pedido anterior)
-  $("#player-search")?.closest(".card")?.classList.add("hidden");
-  $("#player-select")?.closest(".row")?.classList.add("hidden");
-
   const a = state.players.filter(p=>p.group==="A");
   const b = state.players.filter(p=>p.group==="B");
   const mkCard = p => `
@@ -544,7 +518,7 @@ function buildOrMountStatusFilter(){
 
 function matchStatus(m){
   if(m.result === "postponed") return "postponed";
-  if(m.result === "A" || m.result === "B" || m.result === "draw") return "finished";
+  if(m.result === "A" || m.result === "B" || m.result==="draw") return "finished";
   return "pending";
 }
 
@@ -564,6 +538,7 @@ function listenMatches(){
       try { await autoPostponeOverdue(); } finally { _autoPostponeLock = false; }
     }
 
+    // Semis automáticas + liquidação das apostas do usuário corrente
     autoCreateSemisIfDone();
     settleBetsIfFinished();
   });
@@ -624,6 +599,7 @@ function renderMatches(){
     `;
   };
 
+  // agrupar visualmente
   const GA = items.filter(m=>m.stage==="groups" && m.group==="A");
   const GB = items.filter(m=>m.stage==="groups" && m.group==="B");
   const KO = items.filter(m=>m.stage!=="groups");
@@ -795,10 +771,12 @@ function renderHome(){
   `;
   $("#home-next") && ($("#home-next").innerHTML=table);
 
+  // CTA "Lista de players" leva à aba players
   document.querySelectorAll('a[href="#players"]').forEach(a=>{
     a.addEventListener("click", (e)=>{ e.preventDefault(); showTab("players"); });
   });
 
+  // Últimos comunicados
   const posts = state.posts.slice(0,3).map(p=>renderPostItem(p)).join("");
   $("#home-posts") && ($("#home-posts").innerHTML = posts || `<p class="muted">Sem comunicados.</p>`);
   if(state.admin){
@@ -860,17 +838,16 @@ function bindPostForm(){
 }
 
 /* ==================== Apostas ==================== */
+// >>> Corrigido: não usa orderBy no snapshot (sem índice), ordena no cliente
 function listenBets(){
   if(state.listeners.bets) state.listeners.bets();
   if(!state.user){ state.bets=[]; renderBets(); return; }
 
-  // Sem orderBy para não exigir índice composto; ordenamos no cliente
   state.listeners.bets = onSnapshot(
     query(collection(db,"bets"), where("uid","==",state.user.uid)),
     (qs)=>{
       const list = qs.docs.map(d=>{
         const data = d.data();
-        // normaliza createdAt para poder ordenar no cliente
         const ts = data.createdAt?.toMillis ? data.createdAt.toMillis()
                  : data.createdAt?.seconds ? data.createdAt.seconds*1000
                  : 0;
@@ -880,10 +857,7 @@ function listenBets(){
       renderBets();
       renderMatches();
     },
-    (err)=> {
-      console.error("listenBets error:", err);
-      // Dica: se quiser usar orderBy('createdAt','desc'), crie o índice composto sugerido no console.
-    }
+    (err)=> console.error("listenBets", err)
   );
 }
 
@@ -902,6 +876,7 @@ function renderBetsSelect(){
   $("#bet-pick")?.style.setProperty("width","100%");
   $("#bet-match")?.style.setProperty("width","100%");
 }
+
 function renderBets(){
   const tbody = $("#bets-list");
   if(!tbody) return;
@@ -923,30 +898,21 @@ function renderBets(){
   }).join("");
 }
 
-// Evita bind duplicado em hot reload / re-init acidental
-let _betFormBound = false;
 function bindBetForm(){
-  if(_betFormBound) return;
-  const form = $("#bet-form");
-  if(!form) return;
-  _betFormBound = true;
-
-  form.addEventListener("submit", async (e)=>{
+  $("#bet-form")?.addEventListener("submit", async (e)=>{
     e.preventDefault(); e.stopPropagation();
     try{
       if(!state.user) return alert("Entre com Google para apostar.");
       const matchId = $("#bet-match").value;
       const pick = $("#bet-pick").value;
-      if(!matchId || !pick) return alert("Selecione partida e palpite.");
+      if(!matchId || !pick) return;
 
       const match = state.matches.find(m=>m.id===matchId);
       if(!match) return alert("Partida inválida.");
 
-      // valida janela (não permite apostar após o horário marcado)
       const d = parseLocalDate(match.date);
       if(d && d.getTime() <= Date.now()) return alert("Apostas só antes do horário da partida.");
 
-      // congela payout baseado no estado atual
       const { probPct, payout } = payoutForPick(match, pick);
 
       await runTransaction(db, async (tx)=>{
@@ -967,9 +933,15 @@ function bindBetForm(){
         tx.set(walRef, { points: curPts - BET_COST, updatedAt: serverTimestamp() }, { merge:true });
       });
 
+      // Feedback otimista — a UI real confirmará via onSnapshot
+      if (typeof state.wallet === "number") {
+        state.wallet = Math.max(0, state.wallet - BET_COST);
+        const el = $("#wallet-points");
+        if (el) el.textContent = String(state.wallet);
+      }
+
       alert(`Aposta registrada! (custo ${BET_COST} pts)`);
-      form.reset();
-      renderBetsSelect(); // atualiza as partidas ainda apostáveis
+      e.target.reset();
     }catch(err){
       console.error("bet add", err);
       alert(err?.message || "Erro ao registrar aposta. Verifique regras/permissões.");
@@ -989,7 +961,7 @@ async function settleBetsIfFinished(){
     write.update(doc(db,"bets",b.id), { status: ok?"ganhou":"perdeu", settledAt: serverTimestamp() });
     if(ok){
       const credit = Math.max(2, Number.isFinite(b.payoutPoints)? b.payoutPoints : 2);
-      write.set(doc(db,"wallets",state.user.uid), { points: Math.max(MIN_SEED_POINTS, state.wallet) + credit, updatedAt: serverTimestamp() }, { merge:true });
+      write.set(doc(db,"wallets",state.user.uid), { points: Math.max(0, state.wallet) + credit, updatedAt: serverTimestamp() }, { merge:true });
     }
     changed = true;
   }
@@ -1029,7 +1001,7 @@ async function autoCreateSemisIfDone(){
   });
 }
 
-// Resultado (manual, sem duplicidade)
+// Publicar resultados (MANUAL) — sem duplicidade
 async function generateResultPostsForFinished(){
   const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
   const existing = {};
@@ -1057,7 +1029,7 @@ async function generateResultPostsForFinished(){
   alert(created ? `Publicados ${created} comunicado(s) de resultados.` : "Nenhum comunicado pendente de resultado.");
 }
 
-// Adiamento (automático; autor Sistema)
+// Adiamento (AUTO) — autor Sistema
 async function autoPostponeOverdue(){
   const now = Date.now();
   const createdPosts = [];
@@ -1089,7 +1061,7 @@ async function autoPostponeOverdue(){
   }
 }
 
-/* ===== Injeta botões no Admin: publicação manual ===== */
+/* ===== Admin UI extras ===== */
 function ensureAdminToolsButtons(){
   if(!state.admin) return;
   const adminView = $("#admin");
@@ -1283,13 +1255,6 @@ function init(){
   bindPlayerForm();
   bindProfileForm();
   bindSeed();
-
-  // >>> FALTAVA LIGAR O FORM DE APOSTAS <<<
-  bindBetForm();
-  // garantir select populado em caso de init rápido
-  renderBetsSelect();
-
   if(!_bootShown){ _bootShown = true; showTab("home"); }
 }
 init();
-
