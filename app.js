@@ -1,4 +1,4 @@
-// app.js (completo) — Nome=displayName, Usuário=username, saldo mínimo p/ apostar, Lucro/ROI só com apostas lançadas
+// app.js — Saldo pega 'points' de Wallets (maiúsculo) e Bets (maiúsculo), leitura robusta, increment no crédito
 // Firebase v12 (modules)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-app.js";
 import {
@@ -7,7 +7,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-auth.js";
 import {
   getFirestore, collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc,
-  deleteDoc, onSnapshot, query, where, orderBy, serverTimestamp, runTransaction, writeBatch, limit
+  deleteDoc, onSnapshot, query, where, orderBy, serverTimestamp, runTransaction, writeBatch, limit, increment
 } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-firestore.js";
 import {
   getDatabase, ref as rtdbRef, set as rtdbSet, onChildAdded, onChildRemoved,
@@ -72,6 +72,10 @@ const auth = getAuth(app);
 const db   = getFirestore(app);
 const rtdb = getDatabase(app);
 
+// Coleções (maiusculização para casar com seu Firestore)
+const C_WALLETS = "Wallets";
+const C_BETS    = "Bets";
+
 // Admins fixos (opcional)
 const ADMIN_EMAILS = [
   // "seu.email@ifma.edu.br",
@@ -91,7 +95,7 @@ const state = {
   matches: [],
   posts: [],
   bets: [],
-  wallet: 0, // CCIP
+  wallet: 0, // CCIP (points)
   listeners: {
     players:null, matches:null, posts:null, bets:null, wallet:null, chat:null, admin:null, betsFeed:null,
   },
@@ -202,7 +206,7 @@ function updateBetFormEnabled(){
   const submit = form.querySelector('button[type="submit"], .btn[type="submit"], .btn-primary');
   const can = !!state.user && (state.wallet >= BET_COST);
   all.forEach(el=>{
-    if(el.type === "submit") return; // submit tratado separadamente
+    if(el.type === "submit") return;
     el.disabled = !state.user ? true : el.disabled && !can ? true : el.disabled && can ? false : el.disabled;
   });
   if(submit) submit.disabled = !can;
@@ -291,15 +295,28 @@ function listenWallet(uid){
   if(!uid){
     state.wallet=0; renderWalletCard(); return;
   }
-  state.listeners.wallet = onSnapshot(doc(db,"wallets",uid),(snap)=>{
-    const pts = (snap.exists() && typeof snap.data().points==="number") ? snap.data().points : 0;
+  state.listeners.wallet = onSnapshot(doc(db,C_WALLETS,uid),(snap)=>{
+    let pts = 0;
+    if(snap.exists()){
+      const data = snap.data() || {};
+      // pega 'points' de forma robusta (número ou string)
+      let p = data.points;
+      if(typeof p === "string"){
+        const parsed = parseFloat(String(p).replace(",","."));
+        if(Number.isFinite(parsed)) p = parsed;
+      }
+      if(Number.isFinite(p)) pts = p;
+    }
     state.wallet = pts;
     renderWalletCard();
+  }, (err)=> {
+    console.error("listenWallet:", err);
+    state.wallet = 0; renderWalletCard();
   });
 }
 async function ensureWalletInit(uid){
   if(!uid) return;
-  const refWal = doc(db, "wallets", uid);
+  const refWal = doc(db, C_WALLETS, uid);
   try{
     await runTransaction(db, async (tx)=>{
       const snap = await tx.get(refWal);
@@ -319,12 +336,7 @@ async function ensureWalletInit(uid){
   }
 }
 
-/* >>>> NOVO CÁLCULO DE ESTATÍSTICAS DA CARTEIRA <<<<
-   - totalStaked: soma de todos os stakes (tudo que já foi debitado do saldo)
-   - settledStaked: soma de stakes apenas de apostas com status lançado (ganhou/perdeu/adiada)
-   - returns: soma de payouts recebidos (apenas quando ganhou)
-   - profit/ROI calculados APENAS sobre settledStaked (pendentes não entram)
-*/
+/* Estatísticas da carteira (Total apostado soma todos os stakes; Lucro/ROI só com apostas lançadas) */
 function computeMyBetStats(){
   let total=0, wins=0, totalStaked=0, settledStaked=0, returns=0;
   for(const b of state.bets){
@@ -363,7 +375,7 @@ function renderWalletCard(){
     </div>
   `;
   $("#wallet-points") && ($("#wallet-points").textContent = String(state.wallet));
-  updateBetFormEnabled(); // reforça bloqueio do botão se saldo insuficiente
+  updateBetFormEnabled();
 }
 
 /* ==================== Chat (RTDB) ==================== */
@@ -625,7 +637,7 @@ function buildOrMountStatusFilter(){
 }
 function matchStatus(m){
   if(m.result === "postponed") return "postponed";
-  if(m.result === "A" || m.result === "B" || m.result === "draw") return "finished";
+  if(m.result === "A" || m.result === "B" || m.result==="draw") return "finished";
   return "pending";
 }
 function listenMatches(){
@@ -923,7 +935,7 @@ function listenBets(){
   if(state.listeners.bets) state.listeners.bets();
   if(!state.user){ state.bets=[]; renderBetsTable(); renderBetsSelect(); renderWalletCard(); return; }
   state.listeners.bets = onSnapshot(
-    query(collection(db,"bets"), where("uid","==",state.user.uid)),
+    query(collection(db,C_BETS), where("uid","==",state.user.uid)),
     (qs)=>{
       const list = qs.docs.map(d=>{
         const data = d.data();
@@ -1036,11 +1048,11 @@ async function undoLastBet(){
   if(Date.now() > undoState.until) { hideUndoBar(); undoState=null; return; }
   try{
     await runTransaction(db, async (tx)=>{
-      const walRef = doc(db,"wallets",state.user.uid);
-      const betRef = doc(db,"bets", undoState.id);
+      const walRef = doc(db,C_WALLETS,state.user.uid);
+      const betRef = doc(db,C_BETS, undoState.id);
       const [betSnap, walSnap] = await Promise.all([tx.get(betRef), tx.get(walRef)]);
       if(!betSnap.exists()) throw new Error("Aposta já removida.");
-      const cur = walSnap.exists() && typeof walSnap.data().points==="number" ? walSnap.data().points : 0;
+      const cur = walSnap.exists() && Number.isFinite(walSnap.data().points) ? walSnap.data().points : 0;
       tx.delete(betRef);
       tx.set(walRef, { points: cur + (undoState.refund||BET_COST), updatedAt: serverTimestamp() }, { merge:true });
     });
@@ -1075,7 +1087,7 @@ function bindBetForm(){
     e.preventDefault(); e.stopPropagation();
     try{
       if(!state.user) return alert("Entre com Google para apostar.");
-      if(state.wallet < BET_COST) return alert("Saldo insuficiente."); // >>>> reforço de bloqueio no front
+      if(state.wallet < BET_COST) return alert("Saldo insuficiente."); // reforço front
 
       const matchId = $("#bet-match").value;
       const pick = $("#bet-pick").value;
@@ -1092,19 +1104,24 @@ function bindBetForm(){
       const feedKey = betDocId;
 
       await runTransaction(db, async (tx)=>{
-        const walRef = doc(db,"wallets",state.user.uid);
-        const betRef = doc(db,"bets", betDocId);
+        const walRef = doc(db,C_WALLETS,state.user.uid);
+        const betRef = doc(db,C_BETS, betDocId);
         const [betExisting, walSnap] = await Promise.all([tx.get(betRef), tx.get(walRef)]);
         if(betExisting.exists()) throw new Error("Você já apostou nesta partida.");
 
         let curPts = 0;
-        if(walSnap.exists() && typeof walSnap.data().points==="number"){
-          curPts = walSnap.data().points;
+        if(walSnap.exists()){
+          let p = walSnap.data().points;
+          if(typeof p === "string"){
+            const parsed = parseFloat(String(p).replace(",","."));
+            if(Number.isFinite(parsed)) p = parsed;
+          }
+          curPts = Number.isFinite(p) ? p : MIN_SEED_POINTS;
         }else{
           curPts = MIN_SEED_POINTS;
           tx.set(walRef, { points: curPts, email: state.user.email||null, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }, { merge:true });
         }
-        if(curPts < BET_COST) throw new Error("Saldo insuficiente para apostar."); // >>>> bloqueio no back
+        if(curPts < BET_COST) throw new Error("Saldo insuficiente para apostar.");
 
         tx.set(betRef, {
           uid: state.user.uid, matchId, pick,
@@ -1128,7 +1145,7 @@ function bindBetForm(){
         uid: state.user.uid,
         email: state.user.email || "",
         name: fullName,
-        userId,                 // Usuário (username/ID curto)
+        userId,
         matchId,
         aName: mapP[match.aId]||"?",
         bName: mapP[match.bId]||"?",
@@ -1164,9 +1181,9 @@ async function settleBetsIfFinished(){
     if(!m || !m.result || m.result==="postponed") continue;
     const ok = (b.pick==="draw" && m.result==="draw") || (b.pick==="A" && m.result==="A") || (b.pick==="B" && m.result==="B");
     const credit = ok ? Math.max(2, Number.isFinite(b.payoutPoints)? b.payoutPoints : 2) : 0;
-    write.update(doc(db,"bets",b.id), { status: ok?"ganhou":"perdeu", settledAt: serverTimestamp(), settledPayout: credit });
+    write.update(doc(db,C_BETS,b.id), { status: ok?"ganhou":"perdeu", settledAt: serverTimestamp(), settledPayout: credit });
     if(ok){
-      write.set(doc(db,"wallets",state.user.uid), { points: state.wallet + credit, updatedAt: serverTimestamp() }, { merge:true });
+      write.set(doc(db,C_WALLETS,state.user.uid), { points: increment(credit), updatedAt: serverTimestamp() }, { merge:true });
     }
     changed = true;
   }
@@ -1218,12 +1235,11 @@ function addFeedRow(key, v){
   const etapa = v.stage==="groups" ? `F. Grupos${v.group?` ${v.group}`:""}` : stageLabel(v.stage);
 
   const userId = v.userId || (v.email ? v.email.split("@")[0] : (v.uid ? String(v.uid).slice(0,6) : "—"));
-  const fullName = v.name || v.email || userId;
 
   const tr = document.createElement("tr");
   tr.id = `betfeed-${key}`;
   tr.innerHTML = `
-    <td title="${esc(fullName)}">${esc(userId)}</td>
+    <td title="${esc(v.name||userId)}">${esc(userId)}</td>
     <td>${esc(v.aName||"?")} × ${esc(v.bName||"?")}</td>
     <td>${esc(etapa)}</td>
     <td>${v.pick==="A"?"Vitória A": v.pick==="B"?"Vitória B":"Empate"}</td>
@@ -1245,7 +1261,7 @@ function updateFeedStatuses(){ Object.keys(state.feedRowsData).forEach(updateFee
 
 async function verifyFeedBetExists(key, v){
   try{
-    const snap = await getDoc(doc(db,"bets", key));
+    const snap = await getDoc(doc(db,C_BETS, key));
     if(!snap.exists() || (v?.uid && snap.data()?.uid !== v.uid)){
       await rtdbRemove(rtdbRef(rtdb, `betsFeed/${key}`));
       delete state.feedRowsData[key];
@@ -1305,8 +1321,8 @@ function ensureRankingsUI(){
 async function rebuildRankings(){
   ensureRankingsUI();
   const [betsSnap, walletsSnap, profilesSnap] = await Promise.all([
-    getDocs(collection(db,"bets")),
-    getDocs(collection(db,"wallets")),
+    getDocs(collection(db,C_BETS)),
+    getDocs(collection(db,C_WALLETS)),
     getDocs(collection(db,"profiles")).catch(()=>({forEach:()=>{}}))
   ]);
 
@@ -1331,7 +1347,14 @@ async function rebuildRankings(){
     .slice(0,10);
 
   const mostPoints = Object.entries(walletsMap)
-    .map(([uid,w])=> ({ uid, pts: (typeof w.points==="number"?w.points:0), email: w.email||profilesMap[uid]?.email||"" }))
+    .map(([uid,w])=> {
+      let p = w.points;
+      if(typeof p === "string"){
+        const parsed = parseFloat(String(p).replace(",","."));
+        if(Number.isFinite(parsed)) p = parsed;
+      }
+      return { uid, pts: (Number.isFinite(p)?p:0), email: w.email||profilesMap[uid]?.email||"" };
+    })
     .sort((a,b)=> b.pts - a.pts)
     .slice(0,10);
 
@@ -1361,8 +1384,8 @@ function renderRankingsTable(){
     head.innerHTML = `<tr><th>Nome</th><th>E-mail</th><th>Usuário</th><th>Apostas Ganhas</th><th>Total</th><th>Taxa</th></tr>`;
     body.innerHTML = state.rankings.bestByWins.map(r=>{
       const email = profilesMap[r.uid]?.email || walletsMap[r.uid]?.email || "—";
-      const display = profilesMap[r.uid]?.displayName || niceName(r.uid, profilesMap, walletsMap); // Nome = displayName
-      const username = deriveUserIdFromMaps(r.uid, profilesMap, walletsMap); // Usuário = username
+      const display = profilesMap[r.uid]?.displayName || niceName(r.uid, profilesMap, walletsMap);
+      const username = deriveUserIdFromMaps(r.uid, profilesMap, walletsMap);
       return `<tr>
         <td>${esc(display)}</td>
         <td>${esc(email)}</td>
@@ -1545,13 +1568,13 @@ function organizeAdminTools(){
   });
   const btnResetWallets = mkBtn("btn-reset-wallets", "Resetar saldos (todos)", "btn danger", async ()=>{
     if(!confirm("Resetar saldos de todos para 6 CCIP?")) return;
-    const qs = await getDocs(collection(db,"wallets"));
+    const qs = await getDocs(collection(db,C_WALLETS));
     const b = writeBatch(db); qs.forEach(d=> b.set(d.ref, { points: MIN_SEED_POINTS, updatedAt: serverTimestamp() }, { merge:true }));
     await b.commit(); alert("Saldos resetados.");
   });
   const btnResetBets = mkBtn("btn-reset-bets", "Resetar apostas e ranking", "btn danger", async ()=>{
     if(!confirm("Apagar TODAS as apostas e limpar feed?")) return;
-    const qs = await getDocs(collection(db,"bets"));
+    const qs = await getDocs(collection(db,C_BETS));
     const b = writeBatch(db); qs.forEach(d=> b.delete(d.ref)); await b.commit();
     try { await rtdbRemove(rtdbRef(rtdb,"betsFeed")); } catch(_){}
     alert("Apostas e feed foram resetados."); rebuildRankings();
@@ -1561,8 +1584,8 @@ function organizeAdminTools(){
     const b = writeBatch(db);
     (await getDocs(collection(db,"matches"))).forEach(d=> b.delete(d.ref));
     (await getDocs(collection(db,"posts"))).forEach(d=> b.delete(d.ref));
-    (await getDocs(collection(db,"bets"))).forEach(d=> b.delete(d.ref));
-    (await getDocs(collection(db,"wallets"))).forEach(d=> b.set(d.ref, { points: MIN_SEED_POINTS, updatedAt: serverTimestamp() }, { merge:true }));
+    (await getDocs(collection(db,C_BETS))).forEach(d=> b.delete(d.ref));
+    (await getDocs(collection(db,C_WALLETS))).forEach(d=> b.set(d.ref, { points: MIN_SEED_POINTS, updatedAt: serverTimestamp() }, { merge:true }));
     await b.commit();
     try { await rtdbRemove(rtdbRef(rtdb,"betsFeed")); } catch(_){}
     alert("Torneio resetado.");
