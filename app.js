@@ -1,4 +1,4 @@
-// app.js (completo)
+// app.js (completo) — correção de permissões/admin/profile
 // Firebase v12 (modules)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-app.js";
 import {
@@ -7,10 +7,11 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-auth.js";
 import {
   getFirestore, collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc,
-  deleteDoc, onSnapshot, query, where, orderBy, serverTimestamp, runTransaction, writeBatch
+  deleteDoc, onSnapshot, query, where, orderBy, serverTimestamp, runTransaction, writeBatch, limit
 } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-firestore.js";
 import {
-  getDatabase, ref as rtdbRef, set as rtdbSet, onChildAdded, onChildRemoved, remove as rtdbRemove
+  getDatabase, ref as rtdbRef, set as rtdbSet, onChildAdded, onChildRemoved,
+  remove as rtdbRemove, onValue
 } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-database.js";
 
 /* ==================== Helpers DOM ==================== */
@@ -60,12 +61,12 @@ const auth = getAuth(app);
 const db   = getFirestore(app);
 const rtdb = getDatabase(app);
 
-// Admins fixos (opcional)
+// Admins fixos (opcional) — coloque seu e-mail aqui para garantir acesso admin:
 const ADMIN_EMAILS = [
   // "seu.email@ifma.edu.br",
 ];
 
-// Apostas
+// Apostas / sistema
 const BET_COST   = 2;       // CCIP debitados por aposta
 const MIN_SEED_POINTS = 6;  // saldo inicial (CCIP)
 const ONE_DAY_MS = 24*60*60*1000;
@@ -84,44 +85,29 @@ const state = {
     players:null, matches:null, posts:null, bets:null, wallet:null, chat:null, admin:null, betsFeed:null,
   },
   feedRowsData: {},
-  rankings: {
-    bestByWins: [],
-    mostPoints: [],
-    mostBets: [],
-    usersMap: {},
-    walletsMap: {},
-  },
-  tournamentId: null,
-  winners: [], // docs fixos por torneio (não são apagados)
+  rankings: { bestByWins: [], mostPoints: [], mostBets: [], profilesMap: {}, walletsMap: {} },
+  tournamentId: 1,   // evitamos depender de /settings para não esbarrar nas rules
+  winners: [],
 };
 
 let _bootShown = false;
 let _autoPostponeLock = false;
-
-// Undo state
-let undoState = null; // { id, matchId, stake, refund, until, timer, feedKey }
+let undoState = null; // undo da aposta
 
 /* ==================== Abas ==================== */
 function showTab(tab){
   $$(".view").forEach(v=>v.classList.remove("visible"));
   $$(".tab").forEach(b=>b.classList.remove("active"));
-  const el = $(`#${tab}`);
-  if(el) el.classList.add("visible");
-  const btn = $(`.tab[data-tab="${tab}"]`);
-  if(btn) btn.classList.add("active");
+  $(`#${tab}`)?.classList.add("visible");
+  $(`.tab[data-tab="${tab}"]`)?.classList.add("active");
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 function initTabs(){
-  $$(".tab").forEach(btn=>{
-    btn.addEventListener("click", ()=> showTab(btn.dataset.tab));
-  });
+  $$(".tab").forEach(btn=> btn.addEventListener("click", ()=> showTab(btn.dataset.tab)));
   document.querySelectorAll('a[href^="#"]').forEach(a=>{
     a.addEventListener("click", (e)=>{
       const id = a.getAttribute("href").slice(1);
-      if($(`#${id}`)){
-        e.preventDefault();
-        showTab(id);
-      }
+      if($(`#${id}`)){ e.preventDefault(); showTab(id); }
     });
   });
   $("#user-chip")?.addEventListener("click", ()=> showTab("perfil"));
@@ -129,74 +115,73 @@ function initTabs(){
 
 /* ==================== Auth ==================== */
 async function loginGoogle(){
-  try{
-    // persistência local -> evita “parece deslogado”
-    await setPersistence(auth, browserLocalPersistence);
-  }catch(e){ console.warn("setPersistence falhou (seguindo com padrão):", e?.message); }
-
+  try{ await setPersistence(auth, browserLocalPersistence); }catch(_){}
   const provider = new GoogleAuthProvider();
   try{
     await signInWithPopup(auth, provider);
   }catch(err){
-    // fallback útil em ambientes sem popup/3rd party cookies
-    if(err?.code === "auth/operation-not-supported-in-this-environment" ||
-       err?.code === "auth/popup-blocked" ||
-       err?.code === "auth/popup-closed-by-user"){
+    if(err?.code?.startsWith("auth/popup")){
       await signInWithRedirect(auth, provider);
-      return;
+    }else{
+      console.error("login error:", err);
+      alert("Não foi possível entrar com Google. Tente novamente.");
     }
-    console.error("login error:", err);
-    alert("Não foi possível entrar com Google. Tente novamente.");
   }
 }
-async function logout(){
-  await signOut(auth);
-}
+async function logout(){ await signOut(auth); }
 
-// Bootstrap de admin
-async function ensureAdminBootstrap(user){
-  if(!user) return;
-  try{
-    const qs = await getDocs(collection(db,"admins"));
-    if(qs.empty){
-      await setDoc(doc(db,"admins", user.uid), {
-        isAdmin: true, active : true, bootstrap: true,
-        email: user.email || null, name : user.displayName || null,
-        createdAt: serverTimestamp()
-      }, { merge:true });
-    }
-  }catch(e){ console.warn("ensureAdminBootstrap:", e); }
-}
+/** Deteção de admin sem tentar criar nada nas coleções **/
 function applyAdminUI(){
+  // mostra/esconde .admin-only
   $$(".admin-only").forEach(el => el.classList.toggle("hidden", !state.admin));
-  $("#admin-matches-admin")?.remove(); // some
-  $("#seed-btn")?.closest(".row")?.remove(); // some
+  // remove blocos que não devem existir
+  $("#admin-matches-admin")?.remove();
+  $("#seed-btn")?.closest(".row")?.remove();
   organizeAdminTools();
   updateAuthUI();
-  renderMatches();
+  renderMatches();  // para mostrar botões Editar se admin
   renderPosts();
 }
+
 function listenAdmin(user){
-  if(state.listeners.admin) state.listeners.admin();
+  // limpa listeners anteriores
+  if(typeof state.listeners.admin === "function"){ state.listeners.admin(); state.listeners.admin=null; }
   if(!user){ state.admin=false; applyAdminUI(); return; }
-  const adminsRef = doc(db,"admins", user.uid);
-  const refreshBy = async (docData) => {
-    const byList = ADMIN_EMAILS.includes(user.email);
-    const byDoc  = !!(docData && (docData.active === true || docData.isAdmin === true));
-    let byClaim  = false;
-    try { const tk = await user.getIdTokenResult(true); byClaim = !!tk.claims?.admin; } catch(_) {}
-    state.admin = !!(byList || byDoc || byClaim);
+
+  let fsActive = false;
+  let rtdbActive = false;
+  let byClaim = false;
+  const byList = ADMIN_EMAILS.includes(user.email);
+
+  const compute = ()=>{
+    state.admin = !!(byList || fsActive || rtdbActive || byClaim);
     applyAdminUI();
   };
-  state.listeners.admin = onSnapshot(adminsRef, (snap)=>{
-    refreshBy(snap.exists() ? snap.data() : null);
-  }, async (_err)=>{
-    const tk = await user.getIdTokenResult(true).catch(()=>({claims:{}}));
-    const byClaim = !!tk.claims?.admin;
-    state.admin = ADMIN_EMAILS.includes(user.email) || byClaim;
-    applyAdminUI();
-  });
+
+  // Firestore: ler SOMENTE /admins/{uid} (autorizado pelas suas rules)
+  const adminsRef = doc(db,"admins", user.uid);
+  const unsubFS = onSnapshot(adminsRef, (snap)=>{
+    const d = snap.exists() ? snap.data() : null;
+    fsActive = !!(d && (d.active===true || d.isAdmin===true));
+    compute();
+  }, (_e)=>{ fsActive=false; compute(); });
+
+  // RTDB: /admins/{uid}/active (se você usar esse caminho no RTDB)
+  const rtdbRefActive = rtdbRef(rtdb, `admins/${user.uid}/active`);
+  const unsubRT = onValue(rtdbRefActive, (snap)=>{
+    rtdbActive = snap.exists() && snap.val() === true;
+    compute();
+  }, (_e)=>{ rtdbActive = false; compute(); });
+
+  // custom claims
+  user.getIdTokenResult(true).then(tk=>{
+    byClaim = !!tk.claims?.admin; compute();
+  }).catch(()=>{ byClaim=false; compute(); });
+
+  state.listeners.admin = ()=> { try{unsubFS();}catch(_){}
+                                 try{unsubRT();}catch(_){}};  
 }
+
 function setChatEnabled(enabled){
   const input = $("#chat-text");
   const form  = $("#chat-form");
@@ -204,6 +189,7 @@ function setChatEnabled(enabled){
   form && (form.querySelectorAll("input,button,textarea").forEach(el=> el.disabled = !enabled));
   $("#chat-login-hint")?.classList.toggle("hidden", !!enabled);
 }
+
 function updateAuthUI(){
   const chip = $("#user-chip");
   const email = $("#user-email");
@@ -214,7 +200,7 @@ function updateAuthUI(){
 
   if(state.user){
     chip?.classList.remove("hidden");
-    if(email) email.textContent = state.user.displayName || state.user.email;
+    email && (email.textContent = state.user.displayName || state.user.email);
     btnLogin?.classList.add("hidden");
     btnOut?.classList.remove("hidden");
     if(state.admin){ adminBadge?.classList.remove("hidden"); tabAdmin?.classList.remove("hidden"); }
@@ -229,33 +215,64 @@ function updateAuthUI(){
     setChatEnabled(false);
   }
 
-  // Desabilita aposta se não logado
+  // aposta só logado
   const betForm = $("#bet-form");
-  if(betForm){ betForm.querySelectorAll("input,select,button,textarea").forEach(i=> i.disabled = !state.user); }
+  betForm && betForm.querySelectorAll("input,select,button,textarea").forEach(i=> i.disabled = !state.user);
 }
 
-/* ==================== Config do Torneio ==================== */
-async function ensureTournamentId(){
-  const ref = doc(db,"settings","tournament");
-  const snap = await getDoc(ref);
-  if(!snap.exists()){
-    await setDoc(ref, { current: 1, updatedAt: serverTimestamp() });
-    state.tournamentId = 1;
-  }else{
-    state.tournamentId = Number(snap.data().current)||1;
-  }
+/* ==================== Perfil (usa /profiles de acordo com suas rules) ==================== */
+async function loadProfileIntoState(uid){
+  try{
+    const snap = await getDoc(doc(db,"profiles", uid));
+    if(snap.exists()){
+      const p = snap.data();
+      const name = p.displayName || p.name;
+      if(name){ state.user.displayName = name; }
+    }
+  }catch(_){}
 }
-async function incrementTournamentId(){
-  const ref = doc(db,"settings","tournament");
-  await runTransaction(db, async (tx)=>{
-    const s = await tx.get(ref);
-    const cur = s.exists() ? (Number(s.data().current)||1) : 1;
-    tx.set(ref, { current: cur+1, updatedAt: serverTimestamp() });
+function bindProfileForm(){
+  $("#profile-form")?.addEventListener("submit", async (e)=>{
+    e.preventDefault(); e.stopPropagation();
+    if(!state.user) return;
+    const name = $("#profile-name").value.trim();
+    try{
+      await setDoc(doc(db,"profiles",state.user.uid), {
+        displayName: name || null, email: state.user.email || null, updatedAt: serverTimestamp()
+      }, { merge:true });
+      state.user.displayName = name || state.user.displayName;
+      updateAuthUI();
+      alert("Perfil salvo!");
+    }catch(err){
+      console.error("perfil save", err);
+      alert("Sem permissão para salvar perfil. Verifique as rules de /profiles.");
+    }
   });
-  state.tournamentId = (state.tournamentId||1)+1;
+}
+function fillProfile(){
+  if(!state.user){
+    $("#profile-name") && ($("#profile-name").value = "");
+    $("#profile-email") && ($("#profile-email").value = "");
+    $("#profile-username") && ($("#profile-username").textContent = "—");
+    return;
+  }
+  $("#profile-name") && ($("#profile-name").value = state.user.displayName || "");
+  $("#profile-email") && ($("#profile-email").value = state.user.email || "");
+  $("#profile-username") && ($("#profile-username").textContent = state.user.uid.slice(0,6));
 }
 
 /* ==================== Carteira (CCIP) ==================== */
+function listenWallet(uid){
+  if(state.listeners.wallet) state.listeners.wallet();
+  if(!uid){
+    state.wallet=0; renderWalletCard(); return;
+  }
+  state.listeners.wallet = onSnapshot(doc(db,"wallets",uid),(snap)=>{
+    const pts = (snap.exists() && typeof snap.data().points==="number") ? snap.data().points : 0;
+    state.wallet = pts;
+    renderWalletCard();
+  });
+}
 async function ensureWalletInit(uid){
   if(!uid) return;
   const refWal = doc(db, "wallets", uid);
@@ -269,6 +286,7 @@ async function ensureWalletInit(uid){
       }
     });
   }catch(e){
+    // fallback "best effort"
     try{
       const snap = await getDoc(refWal);
       if(!snap.exists()){
@@ -277,18 +295,17 @@ async function ensureWalletInit(uid){
     }catch(err){ console.error("ensureWalletInit fallback:", err); }
   }
 }
-function listenWallet(uid){
-  if(state.listeners.wallet) state.listeners.wallet();
-  if(!uid){
-    state.wallet = 0;
-    renderWalletCard();
-    return;
+function computeMyBetStats(){
+  let total=0, wins=0, staked=0, returns=0;
+  for(const b of state.bets){
+    total++;
+    staked += b.stake||BET_COST;
+    if(b.status==="ganhou"){
+      const ret = Number.isFinite(b.settledPayout) ? b.settledPayout : (b.payoutPoints||0);
+      wins++; returns += ret;
+    }
   }
-  state.listeners.wallet = onSnapshot(doc(db,"wallets",uid),(snap)=>{
-    const pts = (snap.exists() && typeof snap.data().points==="number") ? snap.data().points : 0;
-    state.wallet = pts;
-    renderWalletCard();
-  });
+  return { total, wins, staked, returns };
 }
 function renderWalletCard(){
   const card = $("#apostas .grid-2 .card:first-child");
@@ -311,19 +328,6 @@ function renderWalletCard(){
     </div>
   `;
   $("#wallet-points") && ($("#wallet-points").textContent = String(state.wallet));
-}
-function computeMyBetStats(){
-  let total=0, wins=0, staked=0, returns=0;
-  for(const b of state.bets){
-    total++;
-    staked += b.stake||BET_COST;
-    if(b.status==="ganhou"){
-      const ret = Number.isFinite(b.settledPayout) ? b.settledPayout : (b.payoutPoints||0);
-      wins++;
-      returns += ret;
-    }
-  }
-  return { total, wins, staked, returns };
 }
 
 /* ==================== Chat (RTDB) ==================== */
@@ -375,7 +379,6 @@ function initChat(){
     input.value = "";
   });
 
-  // estado inicial do chat habilitado/desabilitado
   setChatEnabled(!!state.user);
 }
 
@@ -384,11 +387,7 @@ function listenPlayers(){
   if(state.listeners.players) state.listeners.players();
   state.listeners.players = onSnapshot(query(collection(db,"players"), orderBy("name","asc")), (qs)=>{
     state.players = qs.docs.map(d=>({id:d.id, ...d.data()}));
-    renderPlayers();
-    renderPlayerSelects();
-    renderTables();
-    renderBetsSelect();
-    renderHome();
+    renderPlayers(); renderPlayerSelects(); renderTables(); renderBetsSelect(); renderHome();
   });
 }
 function renderPlayers(){
@@ -408,9 +407,7 @@ function renderPlayers(){
   $("#players-cards-A") && ($("#players-cards-A").innerHTML = a.map(mkCard).join("") || "<p class='muted'>Sem jogadores.</p>");
   $("#players-cards-B") && ($("#players-cards-B").innerHTML = b.map(mkCard).join("") || "<p class='muted'>Sem jogadores.</p>");
 
-  $$("#players .player-card").forEach(card=>{
-    card.onclick = ()=> renderPlayerDetails(card.dataset.id);
-  });
+  $$("#players .player-card").forEach(card=> card.onclick = ()=> renderPlayerDetails(card.dataset.id));
 }
 function renderPlayerSelects(){
   const sA = $("#match-a"), sB = $("#match-b");
@@ -423,7 +420,6 @@ function renderPlayerSelects(){
     if(sel) sel.innerHTML = state.players.map(p=> `<option value="${p.id}">${p.name}</option>`).join("");
   });
 }
-
 function computePlayerStats(playerId){
   const groupMatches = state.matches.filter(m=> m.stage==="groups" && (m.aId===playerId || m.bId===playerId));
   let points=0,w=0,d=0,l=0,played=0;
@@ -439,7 +435,6 @@ function computePlayerStats(playerId){
   }
   return { points, wins:w, draws:d, losses:l, played };
 }
-
 function buildPlayerProfileHTML(p){
   const stats = computePlayerStats(p.id);
   const hist = state.matches
@@ -512,7 +507,7 @@ function renderPlayerDetails(playerId){
   });
 }
 
-/* ==================== Standings ==================== */
+/* ==================== Tabela de grupos ==================== */
 function renderTables(){
   ["A","B"].forEach(g=>{
     const rows = state.players.filter(p=>p.group===g).map(p=>{
@@ -565,23 +560,18 @@ function probVED(m){
   const s = pA+pB+pE || 1;
   pA/=s; pB/=s; pE/=s;
 
-  return {
-    A: Math.round(clampPct(pA*100)),
-    E: Math.round(clampPct(pE*100)),
-    D: Math.round(clampPct(pB*100))
-  };
+  return { A: Math.round(clampPct(pA*100)), E: Math.round(clampPct(pE*100)), D: Math.round(clampPct(pB*100)) };
 }
 function payoutForPick(m, pick){
   const p = probVED(m);
   const probPct = pick==="A" ? p.A : pick==="B" ? p.D : p.E;
-  let pr = probPct/100;
-  if(pr <= 0) pr = 0.01;
+  let pr = probPct/100; if(pr <= 0) pr = 0.01;
   const dec = Math.max(1.5, Math.min(5.0, 0.9*(1/pr)));
   const payout = Math.max(2, Math.round(BET_COST * dec));
   return { probPct, payout };
 }
 
-/* ===== filtros partidas ===== */
+/* ===== Filtros ===== */
 function buildOrMountStatusFilter(){
   const filtersBox = $("#partidas .filters");
   if(!filtersBox) return;
@@ -602,30 +592,26 @@ function matchStatus(m){
   if(m.result === "A" || m.result === "B" || m.result === "draw") return "finished";
   return "pending";
 }
-
 function listenMatches(){
   if(state.listeners.matches) state.listeners.matches();
   state.listeners.matches = onSnapshot(query(collection(db,"matches"), orderBy("date","asc")), async (qs)=>{
     state.matches = qs.docs.map(d=>({id:d.id, ...d.data()}));
     buildOrMountStatusFilter();
-    renderMatches();
-    renderTables();
-    renderBetsSelect();
-    renderHome();
+    renderMatches(); renderTables(); renderBetsSelect(); renderHome();
 
-    if(!_autoPostponeLock){
+    // Ações que escrevem no Firestore — apenas se admin
+    if(state.admin && !_autoPostponeLock){
       _autoPostponeLock = true;
       try { await autoPostponeOverdue(); } finally { _autoPostponeLock = false; }
     }
+    if(state.admin) await autoCreateSemisIfDone();
+    if(state.admin) await ensureChampionRecorded();  // grava winners só se admin
 
-    autoCreateSemisIfDone();
-    ensureChampionRecorded();  // grava campeão/vice + campanha
-    settleBetsIfFinished();    // minhas apostas
-    updateFeedStatuses();      // feed RTDB
-    rebuildRankings();         // rankings
+    settleBetsIfFinished();    // minhas apostas (só mexe em /wallets do próprio user)
+    updateFeedStatuses();      // feed RTDB (leitura)
+    rebuildRankings();         // só leituras
   });
 }
-
 function renderMatches(){
   const filterSel = $("#filter-stage");
   const statusSel = $("#filter-status");
@@ -635,6 +621,7 @@ function renderMatches(){
   const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
   let items = state.matches.slice();
 
+  // etapa
   items = items.filter(m=>{
     if(stageFilter==="all") return true;
     if(stageFilter==="groups") return m.stage==="groups";
@@ -643,11 +630,8 @@ function renderMatches(){
     if(stageFilter==="semifinal") return m.stage==="semifinal";
     return true;
   });
-
-  items = items.filter(m=>{
-    if(statusFilter==="all") return true;
-    return matchStatus(m) === statusFilter;
-  });
+  // status
+  items = items.filter(m=> (statusFilter==="all") ? true : matchStatus(m)===statusFilter);
 
   const resLabel = (m)=>{
     if(m.result==="A") return mapP[m.aId]||"?";
@@ -708,17 +692,11 @@ function renderMatches(){
   if(KO.length) html += `<div class="card"><h3>Fase KO</h3>${mkTable(KO)}</div>`;
 
   $("#matches-list") && ($("#matches-list").innerHTML = html || `<div class="card"><p class="muted">Nenhuma partida.</p></div>`);
-
-  if(state.admin){
-    $$(".btn-edit").forEach(b=>{
-      b.onclick = ()=> loadMatchToForm(b.dataset.id);
-    });
-  }
-
+  if(state.admin){ $$(".btn-edit").forEach(b=> b.onclick = ()=> loadMatchToForm(b.dataset.id)); }
   $("#filter-stage")?.addEventListener("change", renderMatches, { once:true });
 }
 
-/* ===== Form Partida ===== */
+/* ===== Form Partida (admin) ===== */
 function bindMatchForm(){
   const form = $("#match-form");
   const resetBtn = $("#match-reset");
@@ -726,6 +704,7 @@ function bindMatchForm(){
 
   form?.addEventListener("submit", async (e)=>{
     e.preventDefault(); e.stopPropagation();
+    if(!state.admin) return alert("Apenas admin pode salvar partidas.");
     try{
       const id = $("#match-id").value || null;
       const aId = $("#match-a").value;
@@ -742,25 +721,20 @@ function bindMatchForm(){
       else if(!id){ payload.date = null; }
       if(id && !dateNew && dateOrig){ payload.date = dateOrig; }
 
-      if(!id){
-        await addDoc(collection(db,"matches"), { ...payload, createdAt: serverTimestamp() });
-      }else{
-        await updateDoc(doc(db,"matches",id), { ...payload, updatedAt: serverTimestamp() });
-      }
-      form.reset();
-      $("#match-id").value="";
-      $("#match-date-orig").value="";
+      if(!id) await addDoc(collection(db,"matches"), { ...payload, createdAt: serverTimestamp() });
+      else await updateDoc(doc(db,"matches",id), { ...payload, updatedAt: serverTimestamp() });
+
+      form.reset(); $("#match-id").value=""; $("#match-date-orig").value="";
     }catch(err){
       console.error("Salvar partida:", err);
       alert("Erro ao salvar partida. Verifique permissões.");
     }
   });
 
-  resetBtn?.addEventListener("click", ()=> {
-    form.reset(); $("#match-id").value=""; $("#match-date-orig").value="";
-  });
+  resetBtn?.addEventListener("click", ()=> { form.reset(); $("#match-id").value=""; $("#match-date-orig").value=""; });
 
   delBtn?.addEventListener("click", async ()=>{
+    if(!state.admin) return alert("Apenas admin pode excluir.");
     const id = $("#match-id").value;
     if(!id) return;
     if(!confirm("Excluir esta partida?")) return;
@@ -780,8 +754,7 @@ function loadMatchToForm(id){
   $("#match-result").value = m.result || "";
   $("#match-date").value = m.date ? (()=>{
     const d = parseLocalDate(m.date);
-    const yyyy = d.getFullYear(), mm=fmt2(d.getMonth()+1), dd=fmt2(d.getDate()), hh=fmt2(d.getHours()), mi=fmt2(d.getMinutes());
-    return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+    return `${d.getFullYear()}-${fmt2(d.getMonth()+1)}-${fmt2(d.getDate())}T${fmt2(d.getHours())}:${fmt2(d.getMinutes())}`;
   })() : "";
   $("#match-date-orig").value = m.date || "";
   $("#admin-matches")?.scrollIntoView({ behavior:"smooth", block:"start" });
@@ -790,10 +763,7 @@ function loadMatchToForm(id){
 /* ==================== Home ==================== */
 function renderHome(){
   const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
-  const pendingScheduled = state.matches
-    .filter(m=> !m.result && !!m.date)
-    .slice()
-    .sort((a,b)=>parseLocalDate(a.date)-parseLocalDate(b.date));
+  const pendingScheduled = state.matches.filter(m=> !m.result && !!m.date).slice().sort((a,b)=>parseLocalDate(a.date)-parseLocalDate(b.date));
 
   const today=new Date(); const s=new Date(today); s.setHours(0,0,0,0); const e=new Date(today); e.setHours(23,59,59,999);
   const isSameDay=(d1,d2)=> d1.getFullYear()==d2.getFullYear()&&d1.getMonth()==d2.getMonth()&&d1.getDate()==d2.getDate();
@@ -822,13 +792,12 @@ function renderHome(){
     </tr>
   `).join("");
 
-  const table=`
+  $("#home-next") && ($("#home-next").innerHTML=`
     <table>
       <thead><tr><th>Etapa</th><th>Hora</th><th>Partida</th></tr></thead>
       <tbody>${rows||"<tr><td colspan='3'>Sem partidas pendentes hoje/próximo dia.</td></tr>"}</tbody>
     </table>
-  `;
-  $("#home-next") && ($("#home-next").innerHTML=table);
+  `);
 
   const posts = state.posts.slice(0,3).map(p=>renderPostItem(p)).join("");
   $("#home-posts") && ($("#home-posts").innerHTML = posts || `<p class="muted">Sem comunicados.</p>`);
@@ -890,31 +859,21 @@ function bindPostForm(){
   });
 }
 
-/* ==================== Apostas: UI Odds ==================== */
+/* ==================== Apostas (minhas + UI) ==================== */
 function ensureOddsHint(){
   if($("#bet-odds-hint")) return $("#bet-odds-hint");
-  const form = $("#bet-form");
-  if(!form) return null;
+  const form = $("#bet-form"); if(!form) return null;
   const p = document.createElement("p");
-  p.id = "bet-odds-hint";
-  p.className = "muted";
-  p.style.marginTop = "8px";
+  p.id = "bet-odds-hint"; p.className = "muted"; p.style.marginTop = "8px";
   form.appendChild(p);
   return p;
 }
 function updateOddsHint(){
   const matchId = $("#bet-match")?.value;
   const pick = $("#bet-pick")?.value;
-  const hint = ensureOddsHint();
-  if(!hint) return;
-  if(!state.user){
-    hint.textContent = "Entre com Google para apostar.";
-    return;
-  }
-  if(!matchId || !pick){
-    hint.textContent = "Selecione a partida e o palpite para ver o retorno estimado.";
-    return;
-  }
+  const hint = ensureOddsHint(); if(!hint) return;
+  if(!state.user){ hint.textContent = "Entre com Google para apostar."; return; }
+  if(!matchId || !pick){ hint.textContent = "Selecione a partida e o palpite para ver o retorno estimado."; return; }
   const m = state.matches.find(x=>x.id===matchId);
   if(!m){ hint.textContent = "Partida inválida."; return; }
   const { payout } = payoutForPick(m, pick);
@@ -926,34 +885,26 @@ function updateOddsHint(){
   $("#bet-pick")?.addEventListener(evt, updateOddsHint);
 });
 
-/* ==================== Apostas (Minhas) ==================== */
 function listenBets(){
   if(state.listeners.bets) state.listeners.bets();
   if(!state.user){ state.bets=[]; renderBetsTable(); renderBetsSelect(); renderWalletCard(); return; }
-
   state.listeners.bets = onSnapshot(
     query(collection(db,"bets"), where("uid","==",state.user.uid)),
     (qs)=>{
       const list = qs.docs.map(d=>{
         const data = d.data();
         const ts = data.createdAt?.toMillis ? data.createdAt.toMillis()
-                 : data.createdAt?.seconds ? data.createdAt.seconds*1000
-                 : 0;
+                 : data.createdAt?.seconds ? data.createdAt.seconds*1000 : 0;
         return { id:d.id, __ts:ts, ...data };
-      });
-      state.bets = list.sort((a,b)=> b.__ts - a.__ts);
-      renderBetsTable();
-      renderBetsSelect();
-      renderWalletCard();
-      renderMatches();
+      }).sort((a,b)=> b.__ts - a.__ts);
+      state.bets = list;
+      renderBetsTable(); renderBetsSelect(); renderWalletCard(); renderMatches();
     },
     (err)=> console.error("listenBets error:", err)
   );
 }
 function renderBetsTable(){
-  const tbody = $("#bets-list");
-  if(!tbody) return;
-  // Cabeçalho fixo (Partida, Etapa, Palpite, Data/Hora, Status, Retorno)
+  const tbody = $("#bets-list"); if(!tbody) return;
   const thead = tbody.closest("table")?.querySelector("thead");
   if(thead){
     thead.innerHTML = `
@@ -966,7 +917,6 @@ function renderBetsTable(){
         <th>Retorno</th>
       </tr>`;
   }
-
   if(!state.bets.length){
     tbody.innerHTML = `<tr><td colspan="6" class="muted">Sem apostas.</td></tr>`;
     return;
@@ -990,20 +940,19 @@ function renderBetsTable(){
   }).join("");
 }
 function renderBetsSelect(){
-  const sel = $("#bet-match");
-  if(!sel) return;
+  const sel = $("#bet-match"); if(!sel) return;
   const already = new Set(state.bets.map(b=> b.matchId));
   const upcoming = state.matches.filter(m=>{
-    if(!state.user) return false; // só logado pode apostar
+    if(!state.user) return false;
     if(m.result) return false;
     if(already.has(m.id)) return false;
     const d = parseLocalDate(m.date);
     return !d || d.getTime() > Date.now();
   });
-  sel.innerHTML = `<option value="">— selecione —</option>` + upcoming.map(m=>{
-    const pn = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
-    return `<option value="${m.id}">${pn[m.aId]||"?"} × ${pn[m.bId]||"?"} — ${stageLabel(m.stage)}${m.group?` ${m.group}`:""} ${m.code?`(${m.code})`:""}</option>`;
-  }).join("");
+  const pn = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
+  sel.innerHTML = `<option value="">— selecione —</option>` + upcoming.map(m=>
+    `<option value="${m.id}">${pn[m.aId]||"?"} × ${pn[m.bId]||"?"} — ${stageLabel(m.stage)}${m.group?` ${m.group}`:""} ${m.code?`(${m.code})`:""}</option>`
+  ).join("");
   $("#bet-pick")?.style.setProperty("width","100%");
   $("#bet-match")?.style.setProperty("width","100%");
   updateOddsHint();
@@ -1023,11 +972,10 @@ function formatBetStatus(b){
   return b.status;
 }
 
-/* ==================== Undo Bar ==================== */
+/* ===== Undo da aposta ===== */
 function ensureUndoBar(){
   if($("#bet-undo-bar")) return $("#bet-undo-bar");
-  const card = $("#apostas .grid-2 .card:nth-child(2)");
-  if(!card) return null;
+  const card = $("#apostas .grid-2 .card:nth-child(2)"); if(!card) return null;
   const bar = document.createElement("div");
   bar.id = "bet-undo-bar";
   bar.style.cssText = "margin-top:8px;padding:8px;border:1px dashed #999;border-radius:8px;display:none;align-items:center;justify-content:space-between;gap:8px";
@@ -1043,16 +991,12 @@ function ensureUndoBar(){
   return bar;
 }
 function showUndoBar(msg){
-  const bar = ensureUndoBar();
-  if(!bar) return;
+  const bar = ensureUndoBar(); if(!bar) return;
   $("#bet-undo-text").innerHTML = msg;
   $("#bet-undo-count").textContent = `5s`;
   bar.style.display = "flex";
 }
-function hideUndoBar(){
-  const bar = $("#bet-undo-bar");
-  if(bar) bar.style.display = "none";
-}
+function hideUndoBar(){ const bar = $("#bet-undo-bar"); if(bar) bar.style.display = "none"; }
 async function undoLastBet(){
   if(!undoState) return;
   if(Date.now() > undoState.until) { hideUndoBar(); undoState=null; return; }
@@ -1060,26 +1004,20 @@ async function undoLastBet(){
     await runTransaction(db, async (tx)=>{
       const walRef = doc(db,"wallets",state.user.uid);
       const betRef = doc(db,"bets", undoState.id);
-
-      // Leituras antes de escritas
       const [betSnap, walSnap] = await Promise.all([tx.get(betRef), tx.get(walRef)]);
       if(!betSnap.exists()) throw new Error("Aposta já removida.");
       const cur = walSnap.exists() && typeof walSnap.data().points==="number" ? walSnap.data().points : 0;
-
       tx.delete(betRef);
       tx.set(walRef, { points: cur + (undoState.refund||BET_COST), updatedAt: serverTimestamp() }, { merge:true });
     });
-    if(undoState.feedKey){
-      await rtdbRemove(rtdbRef(rtdb, `betsFeed/${undoState.feedKey}`)).catch(()=>{});
-    }
+    if(undoState.feedKey){ try{ await rtdbRemove(rtdbRef(rtdb, `betsFeed/${undoState.feedKey}`)); }catch(_){ } }
     alert("Aposta desfeita e CCIP devolvidos.");
   }catch(err){
     console.error("undo bet:", err);
     alert(err?.message || "Não foi possível desfazer.");
   }finally{
     if(undoState?.timer) clearInterval(undoState.timer);
-    undoState = null;
-    hideUndoBar();
+    undoState = null; hideUndoBar();
   }
 }
 function startUndoCountdown(){
@@ -1090,20 +1028,20 @@ function startUndoCountdown(){
     $("#bet-undo-count") && ($("#bet-undo-count").textContent = `${left}s`);
     if(left <= 0){
       if(undoState?.timer) clearInterval(undoState.timer);
-      undoState = null;
-      hideUndoBar();
+      undoState = null; hideUndoBar();
     }
   };
   tick();
   undoState.timer = setInterval(tick, 200);
 }
 
-/* ==================== Submit Aposta ==================== */
+/* ===== Submit Aposta ===== */
 function bindBetForm(){
   $("#bet-form")?.addEventListener("submit", async (e)=>{
     e.preventDefault(); e.stopPropagation();
     try{
-      if(!state.user) { alert("Entre com Google para apostar."); return; }
+      if(!state.user) return alert("Entre com Google para apostar.");
+      if(state.wallet < BET_COST) return alert("Saldo insuficiente.");
 
       const matchId = $("#bet-match").value;
       const pick = $("#bet-pick").value;
@@ -1116,15 +1054,12 @@ function bindBetForm(){
       if(d && d.getTime() <= Date.now()) return alert("Apostas só antes do horário da partida.");
 
       const { probPct, payout } = payoutForPick(match, pick);
-
       const betDocId = `bet_${state.user.uid}_${matchId}`;
       const feedKey = betDocId;
 
       await runTransaction(db, async (tx)=>{
         const walRef = doc(db,"wallets",state.user.uid);
         const betRef = doc(db,"bets", betDocId);
-
-        // Leitura
         const [betExisting, walSnap] = await Promise.all([tx.get(betRef), tx.get(walRef)]);
         if(betExisting.exists()) throw new Error("Você já apostou nesta partida.");
 
@@ -1137,14 +1072,10 @@ function bindBetForm(){
         }
         if(curPts < BET_COST) throw new Error("Saldo insuficiente para apostar.");
 
-        // Escritas
         tx.set(betRef, {
           uid: state.user.uid, matchId, pick,
-          stake: BET_COST,
-          pickProb: probPct,
-          payoutPoints: payout,
-          createdAt: serverTimestamp(), status: "pendente",
-          tournament: state.tournamentId||1
+          stake: BET_COST, pickProb: probPct, payoutPoints: payout,
+          createdAt: serverTimestamp(), status: "pendente", tournament: state.tournamentId||1
         });
         tx.update(walRef, { points: curPts - BET_COST, updatedAt: serverTimestamp() });
       });
@@ -1164,18 +1095,13 @@ function bindBetForm(){
         ts: Date.now()
       });
 
-      undoState = {
-        id: betDocId, matchId, stake: BET_COST, refund: BET_COST,
-        until: Date.now() + UNDO_WINDOW_MS, timer: null, feedKey
-      };
+      undoState = { id: betDocId, matchId, stake: BET_COST, refund: BET_COST, until: Date.now() + UNDO_WINDOW_MS, timer: null, feedKey };
       showUndoBar(`Aposta registrada em <b>${mapP[match.aId]||"?"} × ${mapP[match.bId]||"?"}</b>. Você pode <b>desfazer</b> em até 5s.`);
       startUndoCountdown();
 
-      // ajuste otimista do saldo visual
       const el = $("#wallet-ccip");
       if(el){ const nowPts = Math.max(0, (parseInt(el.textContent||"0",10)||0) - BET_COST); el.textContent = String(nowPts); }
-      e.target.reset();
-      updateOddsHint();
+      e.target.reset(); updateOddsHint();
     }catch(err){
       console.error("bet add", err);
       alert(err?.message || "Erro ao registrar aposta. Verifique regras/permissões.");
@@ -1204,11 +1130,9 @@ async function settleBetsIfFinished(){
 /* ==================== Feed RTDB (Apostas Recentes) ==================== */
 function ensureBetsFeedUI(){
   if($("#bets-feed")) return;
-  const apSec = $("#apostas");
-  if(!apSec) return;
+  const apSec = $("#apostas"); if(!apSec) return;
   const card = document.createElement("div");
-  card.className = "card";
-  card.id = "bets-feed";
+  card.className = "card"; card.id = "bets-feed";
   card.innerHTML = `
     <h2>Apostas recentes (tempo real)</h2>
     <div class="table">
@@ -1240,10 +1164,8 @@ function feedRowStatusAndReturn(v){
   return { status: won?"Ganhou":"Perdeu", retorno: won?(v.payout+" CCIP"):"-" };
 }
 function addFeedRow(key, v){
-  const tbody = $("#bets-feed-tbody");
-  if(!tbody) return;
-  const ph = tbody.querySelector(".muted");
-  if(ph) ph.closest("tr")?.remove();
+  const tbody = $("#bets-feed-tbody"); if(!tbody) return;
+  const ph = tbody.querySelector(".muted"); if(ph) ph.closest("tr")?.remove();
 
   const when = new Date(v.ts||Date.now());
   const { status, retorno } = feedRowStatusAndReturn(v);
@@ -1264,20 +1186,13 @@ function addFeedRow(key, v){
   state.feedRowsData[key] = v;
 }
 function updateFeedRow(key){
-  const v = state.feedRowsData[key];
-  if(!v) return;
-  const tr = $(`#betfeed-${key}`);
-  if(!tr) return;
+  const v = state.feedRowsData[key]; if(!v) return;
+  const tr = $(`#betfeed-${key}`); if(!tr) return;
   const { status, retorno } = feedRowStatusAndReturn(v);
   const tds = tr.querySelectorAll("td");
-  if(tds.length>=7){
-    tds[5].textContent = status;
-    tds[6].textContent = retorno;
-  }
+  if(tds.length>=7){ tds[5].textContent = status; tds[6].textContent = retorno; }
 }
-function updateFeedStatuses(){
-  Object.keys(state.feedRowsData).forEach(updateFeedRow);
-}
+function updateFeedStatuses(){ Object.keys(state.feedRowsData).forEach(updateFeedRow); }
 function listenBetsFeed(){
   ensureBetsFeedUI();
   const tbody = $("#bets-feed-tbody");
@@ -1285,9 +1200,7 @@ function listenBetsFeed(){
   const ref = rtdbRef(rtdb, "betsFeed");
 
   state.listeners.betsFeed = onChildAdded(ref, (snap)=> {
-    const key = snap.key;
-    const v = snap.val();
-    addFeedRow(key, v);
+    const key = snap.key; const v = snap.val(); addFeedRow(key, v);
   });
   onChildRemoved(ref, (snap)=> {
     const key = snap.key;
@@ -1299,14 +1212,12 @@ function listenBetsFeed(){
   });
 }
 
-/* ==================== Rankings (tabelas + filtro, com estilo melhor) ==================== */
+/* ==================== Rankings ==================== */
 function ensureRankingsUI(){
   if($("#rankings-card")) return;
-  const apSec = $("#apostas");
-  if(!apSec) return;
+  const apSec = $("#apostas"); if(!apSec) return;
   const card = document.createElement("div");
-  card.className = "card";
-  card.id = "rankings-card";
+  card.className = "card"; card.id = "rankings-card";
   card.innerHTML = `
     <h2>Rankings (Top 10)</h2>
     <div class="row" style="gap:8px;align-items:center">
@@ -1328,31 +1239,20 @@ function ensureRankingsUI(){
   apSec.appendChild(card);
   $("#rk-filter").addEventListener("change", renderRankingsTable);
 }
-function niceName(uid, usersMap, walletsMap){
-  const u = usersMap[uid];
-  if(u?.displayName) return u.displayName;
-  const w = walletsMap[uid];
-  if(w?.name) return w.name;
-  return (u?.email || w?.email || uid)?.split("@")[0] || uid.slice(0,6);
-}
 async function rebuildRankings(){
   ensureRankingsUI();
-  const [betsSnap, walletsSnap, usersSnap] = await Promise.all([
+  const [betsSnap, walletsSnap, profilesSnap] = await Promise.all([
     getDocs(collection(db,"bets")),
     getDocs(collection(db,"wallets")),
-    getDocs(collection(db,"users")).catch(()=>({forEach:()=>{}}))
+    getDocs(collection(db,"profiles")).catch(()=>({forEach:()=>{}}))
   ]);
 
-  const usersMap = {};
-  usersSnap.forEach(d=> usersMap[d.id] = d.data());
-
-  const walletsMap = {};
-  walletsSnap.forEach(d=> walletsMap[d.id] = d.data());
+  const profilesMap = {}; profilesSnap.forEach(d=> profilesMap[d.id] = d.data());
+  const walletsMap = {};  walletsSnap.forEach(d=> walletsMap[d.id] = d.data());
 
   const byUser = {}; // uid -> {total,wins}
   betsSnap.forEach(d=>{
-    const b = d.data();
-    const uid = b.uid; if(!uid) return;
+    const b = d.data(); const uid = b.uid; if(!uid) return;
     if(!byUser[uid]) byUser[uid] = { total:0, wins:0 };
     byUser[uid].total++;
     const m = state.matches.find(x=>x.id===b.matchId);
@@ -1362,14 +1262,13 @@ async function rebuildRankings(){
     }
   });
 
-  // Melhor Apostador
   const bestByWins = Object.entries(byUser)
     .map(([uid,v])=> ({ uid, wins:v.wins, total:v.total, rate: v.total? v.wins/v.total : 0 }))
     .sort((a,b)=> (b.wins - a.wins) || (b.rate - a.rate) || (b.total - a.total))
     .slice(0,10);
 
   const mostPoints = Object.entries(walletsMap)
-    .map(([uid,w])=> ({ uid, pts: (typeof w.points==="number"?w.points:0), email: w.email||usersMap[uid]?.email||"" }))
+    .map(([uid,w])=> ({ uid, pts: (typeof w.points==="number"?w.points:0), email: w.email||profilesMap[uid]?.email||"" }))
     .sort((a,b)=> b.pts - a.pts)
     .slice(0,10);
 
@@ -1378,8 +1277,14 @@ async function rebuildRankings(){
     .sort((a,b)=> b.total - a.total)
     .slice(0,10);
 
-  state.rankings = { bestByWins, mostPoints, mostBets, usersMap, walletsMap };
+  state.rankings = { bestByWins, mostPoints, mostBets, profilesMap, walletsMap };
   renderRankingsTable();
+}
+function niceName(uid, profilesMap, walletsMap){
+  const p = profilesMap[uid];
+  if(p?.displayName) return p.displayName;
+  const w = walletsMap[uid];
+  return (p?.email || w?.email || uid)?.split("@")[0] || uid.slice(0,6);
 }
 function renderRankingsTable(){
   const head = $("#rk-head");
@@ -1387,15 +1292,15 @@ function renderRankingsTable(){
   const note = $("#rk-footnote");
   if(!head || !body) return;
   const mode = $("#rk-filter")?.value || "best";
-  const { usersMap, walletsMap } = state.rankings;
+  const { profilesMap, walletsMap } = state.rankings;
 
   if(mode==="best"){
     head.innerHTML = `<tr><th>Nome</th><th>E-mail</th><th>Usuário</th><th>Apostas Ganhas</th><th>Total</th><th>Taxa</th></tr>`;
     body.innerHTML = state.rankings.bestByWins.map(r=>{
-      const email = usersMap[r.uid]?.email || walletsMap[r.uid]?.email || "—";
-      const usr = (usersMap[r.uid]?.email||walletsMap[r.uid]?.email||r.uid).split("@")[0];
+      const email = profilesMap[r.uid]?.email || walletsMap[r.uid]?.email || "—";
+      const usr = (email||r.uid).split("@")[0];
       return `<tr>
-        <td>${niceName(r.uid, usersMap, walletsMap)}</td>
+        <td>${niceName(r.uid, profilesMap, walletsMap)}</td>
         <td>${email}</td>
         <td>${usr}</td>
         <td>${r.wins}</td>
@@ -1407,23 +1312,23 @@ function renderRankingsTable(){
   }else if(mode==="points"){
     head.innerHTML = `<tr><th>Nome</th><th>E-mail</th><th>Usuário</th><th>CCIP</th></tr>`;
     body.innerHTML = state.rankings.mostPoints.map(r=>{
-      const email = r.email || usersMap[r.uid]?.email || "—";
+      const email = r.email || profilesMap[r.uid]?.email || "—";
       const usr = (email||r.uid).split("@")[0];
       return `<tr>
-        <td>${niceName(r.uid, usersMap, walletsMap)}</td>
+        <td>${niceName(r.uid, profilesMap, walletsMap)}</td>
         <td>${email}</td>
         <td>${usr}</td>
         <td>${r.pts}</td>
       </tr>`;
     }).join("") || `<tr><td class="muted" colspan="4">Sem dados.</td></tr>`;
     note.textContent = "Saldo atual de CCIP.";
-  }else{ // bets
+  }else{
     head.innerHTML = `<tr><th>Nome</th><th>E-mail</th><th>Usuário</th><th>Apostas</th></tr>`;
     body.innerHTML = state.rankings.mostBets.map(r=>{
-      const email = usersMap[r.uid]?.email || walletsMap[r.uid]?.email || "—";
+      const email = profilesMap[r.uid]?.email || walletsMap[r.uid]?.email || "—";
       const usr = (email||r.uid).split("@")[0];
       return `<tr>
-        <td>${niceName(r.uid, usersMap, walletsMap)}</td>
+        <td>${niceName(r.uid, profilesMap, walletsMap)}</td>
         <td>${email}</td>
         <td>${usr}</td>
         <td>${r.total}</td>
@@ -1433,7 +1338,7 @@ function renderRankingsTable(){
   }
 }
 
-/* ==================== Semis, Resultados & Comunicados Detalhados ==================== */
+/* ==================== Semis / Comunicados / Campeões ==================== */
 async function autoCreateSemisIfDone(){
   const groupsDone = ["A","B"].every(g=>{
     const ms = state.matches.filter(m=>m.stage==="groups" && m.group===g);
@@ -1465,8 +1370,6 @@ async function autoCreateSemisIfDone(){
     authorEmail: "sistema@champions"
   });
 }
-
-// resultado → posts manuais (sem duplicidade) com detalhes
 async function generateResultPostsForFinished(){
   const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
   const existing = {};
@@ -1478,13 +1381,12 @@ async function generateResultPostsForFinished(){
     if(existing[m.id]) continue;
     const when = fmtLocalDateStr(m.date||null);
     const etapa = m.stage==="groups" ? `F. Grupos${m.group?` ${m.group}`:""}` : stageLabel(m.stage);
-    const title = (m.result==="draw")
-      ? `Empate: ${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}`
-      : `Vitória de ${(m.result==="A"?mapP[m.aId]:mapP[m.bId])||"?"}`;
+    const title = (m.result==="draw") ? `Empate: ${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}`
+                                     : `Vitória de ${(m.result==="A"?mapP[m.aId]:mapP[m.bId])||"?"}`;
     const body = [
       `Etapa: ${etapa}${m.code?` • Código: ${m.code}`:""}`,
       `Data/Hora: ${when}`,
-      `Placar: ${m.result==="draw" ? "Empate" : (m.result==="A"? `${mapP[m.aId]} venceu ${mapP[m.bId]}` : `${mapP[m.bId]} venceu ${mapP[m.aId]}`)}`
+      `Confronto: ${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}`
     ].join("\n");
     await addDoc(collection(db,"posts"), {
       title, body, type: "result", matchId: m.id,
@@ -1495,8 +1397,6 @@ async function generateResultPostsForFinished(){
   }
   alert(created ? `Publicados ${created} comunicado(s) de resultados.` : "Nenhum comunicado pendente de resultado.");
 }
-
-// adiamento automático mais detalhado
 async function autoPostponeOverdue(){
   const now = Date.now();
   const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
@@ -1527,24 +1427,132 @@ Motivo: expiração de 24h sem resultado registrado.`,
   }
 }
 
-/* ==================== Winners (aba dinâmica, ranking + por torneio) ==================== */
+/** Campeões (gravar winners) — só se admin. Caso suas rules não permitam /winners, a operação é ignorada com log. */
+async function ensureChampionRecorded(){
+  try{
+    const finals = state.matches.filter(m=> m.stage==="final" && (m.result==="A" || m.result==="B"));
+    if(!finals.length) return;
+    const m = finals[0];
+    const existing = await getDocs(query(collection(db,"winners"), where("tournament","==", state.tournamentId), limit(1)));
+    if(!existing.empty) return;
+
+    const champ = m.result==="A" ? m.aId : m.bId;
+    const vice  = m.result==="A" ? m.bId : m.aId;
+
+    const campaign = state.matches
+      .filter(x=> x.aId===champ || x.bId===champ)
+      .map(x=> ({ aId:x.aId, bId:x.bId, stage: x.stage==="groups" ? `F. Grupos${x.group?` ${x.group}`:""}` : stageLabel(x.stage), date:x.date||null, code:x.code||null, result:x.result||null }));
+
+    await addDoc(collection(db,"winners"), {
+      tournament: state.tournamentId, champion: champ, runnerUp: vice, campaign, createdAt: serverTimestamp()
+    });
+  }catch(err){ console.warn("ensureChampionRecorded (ignorado):", err?.message); }
+}
+
+/* ==================== Ferramentas Admin ==================== */
+function organizeAdminTools(){
+  if(!state.admin) return;
+  const adminView = $("#admin"); if(!adminView) return;
+
+  const toolsCard = Array.from(adminView.querySelectorAll(".card")).find(c => /Ferramentas/i.test(c.textContent || ""));
+  if(!toolsCard) return;
+
+  let panel = toolsCard.querySelector("#admin-tools-panel");
+  if(!panel){
+    panel = document.createElement("div");
+    panel.id = "admin-tools-panel";
+    panel.style.cssText = "display:flex;flex-wrap:wrap;gap:12px;margin-top:8px;";
+    toolsCard.appendChild(panel);
+  }else{ panel.innerHTML = ""; }
+
+  const mkBtn = (id, text, cls="btn", onClick=()=>{})=>{
+    const b = document.createElement("button");
+    b.id = id; b.className = cls; b.textContent = text; b.addEventListener("click", onClick);
+    return b;
+  };
+
+  const btnPublishResults = mkBtn("btn-publish-results", "Publicar resultados (pendentes)", "btn", generateResultPostsForFinished);
+  const btnPublishPostponed = mkBtn("btn-publish-postponed", "Publicar adiamentos (pendentes)", "btn ghost", generatePostponedPostsForOverdue);
+  const btnDeletePosts = mkBtn("btn-delete-all-posts", "Apagar TODOS os comunicados", "btn danger", async ()=>{
+    if(!confirm("Apagar TODOS os comunicados?")) return;
+    const qs = await getDocs(collection(db,"posts"));
+    const b = writeBatch(db); qs.forEach(d=> b.delete(d.ref)); await b.commit();
+    alert("Todos os comunicados foram apagados.");
+  });
+  const btnResetWallets = mkBtn("btn-reset-wallets", "Resetar saldos (todos)", "btn danger", async ()=>{
+    if(!confirm("Resetar saldos de todos para 6 CCIP?")) return;
+    const qs = await getDocs(collection(db,"wallets"));
+    const b = writeBatch(db); qs.forEach(d=> b.set(d.ref, { points: MIN_SEED_POINTS, updatedAt: serverTimestamp() }, { merge:true }));
+    await b.commit(); alert("Saldos resetados.");
+  });
+  const btnResetBets = mkBtn("btn-reset-bets", "Resetar apostas e ranking", "btn danger", async ()=>{
+    if(!confirm("Apagar TODAS as apostas e limpar feed?")) return;
+    const qs = await getDocs(collection(db,"bets"));
+    const b = writeBatch(db); qs.forEach(d=> b.delete(d.ref)); await b.commit();
+    try { await rtdbRemove(rtdbRef(rtdb,"betsFeed")); } catch(_){}
+    alert("Apostas e feed foram resetados."); rebuildRankings();
+  });
+  const btnResetAll = mkBtn("btn-reset-all", "Resetar Torneio (TUDO)", "btn danger", async ()=>{
+    if(!confirm("Isto vai APAGAR partidas, apostas, comunicados, limpar feed de apostas e resetar saldos. Continuar?")) return;
+    const b = writeBatch(db);
+    (await getDocs(collection(db,"matches"))).forEach(d=> b.delete(d.ref));
+    (await getDocs(collection(db,"posts"))).forEach(d=> b.delete(d.ref));
+    (await getDocs(collection(db,"bets"))).forEach(d=> b.delete(d.ref));
+    (await getDocs(collection(db,"wallets"))).forEach(d=> b.set(d.ref, { points: MIN_SEED_POINTS, updatedAt: serverTimestamp() }, { merge:true }));
+    await b.commit();
+    try { await rtdbRemove(rtdbRef(rtdb,"betsFeed")); } catch(_){}
+    alert("Torneio resetado.");
+    rebuildRankings();
+  });
+
+  [btnPublishResults, btnPublishPostponed, btnDeletePosts, btnResetWallets, btnResetBets, btnResetAll]
+    .forEach(x=> panel.appendChild(x));
+}
+async function generatePostponedPostsForOverdue(){
+  if(!state.admin) return alert("Apenas admin.");
+  let created = 0;
+  const now = Date.now();
+  const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
+  for(const m of state.matches){
+    if(m.result) continue;
+    if(!m.date) continue;
+    const d = parseLocalDate(m.date);
+    if(!d || (now - d.getTime()) < ONE_DAY_MS) continue;
+
+    await updateDoc(doc(db,"matches",m.id), { result:"postponed", updatedAt: serverTimestamp() });
+
+    const has = state.posts.some(p=> p.matchId===m.id && p.type==="postponed");
+    if(!has){
+      await addDoc(collection(db,"posts"), {
+        title: "Partida adiada",
+        body: `Etapa: ${m.stage==="groups" ? `F. Grupos${m.group?` ${m.group}`:""}`: stageLabel(m.stage)}${m.code?` • Código: ${m.code}`:""}
+Data/Hora original: ${fmtLocalDateStr(m.date)}
+Confronto: ${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}
+Motivo: expiração de 24h sem resultado registrado.`,
+        type: "postponed",
+        matchId: m.id,
+        createdAt: serverTimestamp(),
+        authorName: "Sistema",
+        authorEmail: "sistema@champions"
+      });
+      created++;
+    }
+  }
+  alert(created ? `Publicados ${created} comunicado(s) de adiamento.` : "Nenhum adiamento pendente.");
+}
+
+/* ==================== Winners (leitura) ==================== */
 function ensureWinnersTab(){
   if($("#vencedores")) return;
-  // botão no navbar
   const navCenter = document.querySelector(".nav-center");
   if(navCenter && !navCenter.querySelector('[data-tab="vencedores"]')){
     const btn = document.createElement("button");
-    btn.className = "tab";
-    btn.dataset.tab = "vencedores";
-    btn.textContent = "Vencedores";
-    btn.addEventListener("click", ()=> showTab("vencedores"));
-    navCenter.appendChild(btn);
+    btn.className = "tab"; btn.dataset.tab = "vencedores"; btn.textContent = "Vencedores";
+    btn.addEventListener("click", ()=> showTab("vencedores")); navCenter.appendChild(btn);
   }
-  // seção
   const main = document.querySelector("main.container");
   const sec = document.createElement("section");
-  sec.id = "vencedores";
-  sec.className = "view";
+  sec.id = "vencedores"; sec.className = "view";
   sec.innerHTML = `
     <div class="card">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
@@ -1560,17 +1568,8 @@ function ensureWinnersTab(){
         <div id="winners-by-tournament">
           <div class="table">
             <table>
-              <thead>
-                <tr>
-                  <th>Torneio</th>
-                  <th>Campeão</th>
-                  <th>Vice</th>
-                  <th>Ver campanha</th>
-                </tr>
-              </thead>
-              <tbody id="winners-body">
-                <tr><td class="muted" colspan="4">Sem registros.</td></tr>
-              </tbody>
+              <thead><tr><th>Torneio</th><th>Campeão</th><th>Vice</th><th>Ver campanha</th></tr></thead>
+              <tbody id="winners-body"><tr><td class="muted" colspan="4">Sem registros.</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -1578,9 +1577,7 @@ function ensureWinnersTab(){
           <div class="table">
             <table>
               <thead><tr><th>Jogador</th><th>Títulos</th></tr></thead>
-              <tbody id="winners-rank-body">
-                <tr><td class="muted" colspan="2">Sem registros.</td></tr>
-              </tbody>
+              <tbody id="winners-rank-body"><tr><td class="muted" colspan="2">Sem registros.</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -1588,7 +1585,6 @@ function ensureWinnersTab(){
     </div>
   `;
   main?.appendChild(sec);
-
   $("#winners-filter")?.addEventListener("change", ()=>{
     const v = $("#winners-filter").value;
     $("#winners-by-tournament").style.display = (v==="byTournament") ? "block" : "none";
@@ -1597,19 +1593,16 @@ function ensureWinnersTab(){
 }
 function listenWinners(){
   ensureWinnersTab();
-  onSnapshot(query(collection(db,"winners"), orderBy("tournament","desc")), (qs)=>{
-    state.winners = qs.docs.map(d=>({id:d.id, ...d.data()}));
-    renderWinners();
-    renderWinnersRank();
-  });
+  try{
+    onSnapshot(query(collection(db,"winners"), orderBy("tournament","desc")), (qs)=>{
+      state.winners = qs.docs.map(d=>({id:d.id, ...d.data()}));
+      renderWinners(); renderWinnersRank();
+    }, (_e)=>{ /* ignorar erros de permissão para não quebrar UI */ });
+  }catch(_){}
 }
 function renderWinners(){
-  const tbody = $("#winners-body");
-  if(!tbody) return;
-  if(!state.winners.length){
-    tbody.innerHTML = `<tr><td class="muted" colspan="4">Sem registros.</td></tr>`;
-    return;
-  }
+  const tbody = $("#winners-body"); if(!tbody) return;
+  if(!state.winners.length){ tbody.innerHTML = `<tr><td class="muted" colspan="4">Sem registros.</td></tr>`; return; }
   const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
   tbody.innerHTML = state.winners.map(w=>{
     const champ = mapP[w.champion]||"—";
@@ -1621,7 +1614,6 @@ function renderWinners(){
       <td><button class="btn small" data-campaign="${w.id}">Ver campanha</button></td>
     </tr>`;
   }).join("");
-
   tbody.querySelectorAll("button[data-campaign]").forEach(btn=>{
     btn.addEventListener("click", ()=>{
       const id = btn.getAttribute("data-campaign");
@@ -1632,21 +1624,13 @@ function renderWinners(){
   });
 }
 function renderWinnersRank(){
-  const tbody = $("#winners-rank-body");
-  if(!tbody) return;
-  if(!state.winners.length){
-    tbody.innerHTML = `<tr><td class="muted" colspan="2">Sem registros.</td></tr>`;
-    return;
-  }
-  const tally = {}; // playerId -> titles
-  state.winners.forEach(w=> { tally[w.champion] = (tally[w.champion]||0)+1; });
+  const tbody = $("#winners-rank-body"); if(!tbody) return;
+  if(!state.winners.length){ tbody.innerHTML = `<tr><td class="muted" colspan="2">Sem registros.</td></tr>`; return; }
+  const tally = {}; state.winners.forEach(w=> { tally[w.champion] = (tally[w.champion]||0)+1; });
   const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
-  const rows = Object.entries(tally)
-    .map(([pid, n])=>({ name: mapP[pid]||pid, n }))
-    .sort((a,b)=> b.n - a.n)
-    .slice(0, 20)
-    .map(r=> `<tr><td>${r.name}</td><td>${r.n}</td></tr>`)
-    .join("");
+  const rows = Object.entries(tally).map(([pid, n])=>({ name: mapP[pid]||pid, n }))
+    .sort((a,b)=> b.n - a.n).slice(0, 20)
+    .map(r=> `<tr><td>${r.name}</td><td>${r.n}</td></tr>`).join("");
   tbody.innerHTML = rows || `<tr><td class="muted" colspan="2">Sem registros.</td></tr>`;
 }
 function showCampaignModal(w){
@@ -1680,163 +1664,6 @@ function showCampaignModal(w){
   document.body.appendChild(modal);
   modal.querySelector("#camp-close")?.addEventListener("click", ()=> modal.remove());
 }
-async function ensureChampionRecorded(){
-  // final concluída do torneio atual → grava em winners (fixo)
-  const finals = state.matches.filter(m=> m.stage==="final" && (m.result==="A" || m.result==="B"));
-  if(!finals.length) return;
-  const m = finals[0];
-  const existing = await getDocs(query(collection(db,"winners"), where("tournament","==", state.tournamentId||1)));
-  if(!existing.empty) return;
-
-  const champ = m.result==="A" ? m.aId : m.bId;
-  const vice  = m.result==="A" ? m.bId : m.aId;
-
-  // campanha do campeão (snapshot salvo de forma fixa)
-  const campaign = state.matches
-    .filter(x=> x.aId===champ || x.bId===champ)
-    .map(x=> ({ aId:x.aId, bId:x.bId, stage: x.stage==="groups" ? `F. Grupos${x.group?` ${x.group}`:""}` : stageLabel(x.stage), date:x.date||null, code:x.code||null, result:x.result||null }));
-
-  await addDoc(collection(db,"winners"), {
-    tournament: state.tournamentId||1,
-    champion: champ,
-    runnerUp: vice,
-    campaign,
-    createdAt: serverTimestamp()
-  });
-}
-
-/* ==================== Ferramentas Admin (layout + ações) ==================== */
-function organizeAdminTools(){
-  if(!state.admin) return;
-  const adminView = $("#admin");
-  if(!adminView) return;
-
-  const toolsCard = Array.from(adminView.querySelectorAll(".card"))
-    .find(c => /Ferramentas/i.test(c.textContent || ""));
-  if(!toolsCard) return;
-
-  let panel = toolsCard.querySelector("#admin-tools-panel");
-  if(!panel){
-    panel = document.createElement("div");
-    panel.id = "admin-tools-panel";
-    panel.style.cssText = "display:flex;flex-wrap:wrap;gap:12px;margin-top:8px;";
-    toolsCard.appendChild(panel);
-  }else{
-    panel.innerHTML = "";
-  }
-
-  const mkBtn = (id, text, cls="btn", onClick=()=>{})=>{
-    const b = document.createElement("button");
-    b.id = id; b.className = cls; b.textContent = text;
-    b.addEventListener("click", onClick);
-    return b;
-  };
-
-  const btnPublishResults = mkBtn("btn-publish-results", "Publicar resultados (pendentes)", "btn", generateResultPostsForFinished);
-  const btnPublishPostponed = mkBtn("btn-publish-postponed", "Publicar adiamentos (pendentes)", "btn ghost", generatePostponedPostsForOverdue);
-  const btnDeletePosts = mkBtn("btn-delete-all-posts", "Apagar TODOS os comunicados", "btn danger", async ()=>{
-    if(!confirm("Apagar TODOS os comunicados?")) return;
-    const qs = await getDocs(collection(db,"posts"));
-    const b = writeBatch(db);
-    qs.forEach(d=> b.delete(d.ref));
-    await b.commit();
-    alert("Todos os comunicados foram apagados.");
-  });
-  const btnResetWallets = mkBtn("btn-reset-wallets", "Resetar saldos (todos)", "btn danger", async ()=>{
-    if(!confirm("Resetar saldos de todos para 6 CCIP?")) return;
-    const qs = await getDocs(collection(db,"wallets"));
-    const b = writeBatch(db);
-    qs.forEach(d=> b.set(d.ref, { points: MIN_SEED_POINTS, updatedAt: serverTimestamp() }, { merge:true }));
-    await b.commit();
-    alert("Saldos resetados.");
-  });
-  const btnResetBets = mkBtn("btn-reset-bets", "Resetar apostas e ranking", "btn danger", async ()=>{
-    if(!confirm("Apagar TODAS as apostas e limpar feed?")) return;
-    const qs = await getDocs(collection(db,"bets"));
-    const b = writeBatch(db);
-    qs.forEach(d=> b.delete(d.ref));
-    await b.commit();
-    try { await rtdbRemove(rtdbRef(rtdb,"betsFeed")); } catch(_){}
-    alert("Apostas e feed foram resetados.");
-    rebuildRankings();
-  });
-
-  const btnResetAll = mkBtn("btn-reset-all", "Resetar Torneio (TUDO)", "btn danger", async ()=>{
-    if(!confirm("Isto vai APAGAR partidas, apostas, comunicados, limpar feed de apostas e resetar saldos. Continuar?")) return;
-    const b = writeBatch(db);
-    (await getDocs(collection(db,"matches"))).forEach(d=> b.delete(d.ref));
-    (await getDocs(collection(db,"posts"))).forEach(d=> b.delete(d.ref));
-    (await getDocs(collection(db,"bets"))).forEach(d=> b.delete(d.ref));
-    (await getDocs(collection(db,"wallets"))).forEach(d=> b.set(d.ref, { points: MIN_SEED_POINTS, updatedAt: serverTimestamp() }, { merge:true }));
-    await b.commit();
-    try { await rtdbRemove(rtdbRef(rtdb,"betsFeed")); } catch(_){}
-    await incrementTournamentId();
-    alert(`Torneio resetado. Novo ciclo: #${state.tournamentId}.`);
-    rebuildRankings();
-  });
-
-  [btnPublishResults, btnPublishPostponed, btnDeletePosts, btnResetWallets, btnResetBets, btnResetAll]
-    .forEach(x=> panel.appendChild(x));
-}
-async function generatePostponedPostsForOverdue(){
-  let created = 0;
-  const now = Date.now();
-  const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
-  for(const m of state.matches){
-    if(m.result) continue;
-    if(!m.date) continue;
-    const d = parseLocalDate(m.date);
-    if(!d || (now - d.getTime()) < ONE_DAY_MS) continue;
-
-    await updateDoc(doc(db,"matches",m.id), { result:"postponed", updatedAt: serverTimestamp() });
-
-    const has = state.posts.some(p=> p.matchId===m.id && p.type==="postponed");
-    if(!has){
-      await addDoc(collection(db,"posts"), {
-        title: "Partida adiada",
-        body: `Etapa: ${m.stage==="groups" ? `F. Grupos${m.group?` ${m.group}`:""}`: stageLabel(m.stage)}${m.code?` • Código: ${m.code}`:""}
-Data/Hora original: ${fmtLocalDateStr(m.date)}
-Confronto: ${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}
-Motivo: expiração de 24h sem resultado registrado.`,
-        type: "postponed",
-        matchId: m.id,
-        createdAt: serverTimestamp(),
-        authorName: "Sistema",
-        authorEmail: "sistema@champions"
-      });
-      created++;
-    }
-  }
-  alert(created ? `Publicados ${created} comunicado(s) de adiamento.` : "Nenhum adiamento pendente.");
-}
-
-/* ==================== Perfil ==================== */
-function bindProfileForm(){
-  $("#profile-form")?.addEventListener("submit", async (e)=>{
-    e.preventDefault(); e.stopPropagation();
-    if(!state.user) return;
-    const name = $("#profile-name").value.trim();
-    if(name){
-      await setDoc(doc(db,"users",state.user.uid), {
-        displayName: name, email: state.user.email, updatedAt: serverTimestamp()
-      }, { merge:true });
-      state.user.displayName = name;
-      updateAuthUI();
-      alert("Perfil salvo!");
-    }
-  });
-}
-function fillProfile(){
-  if(!state.user){
-    $("#profile-name") && ($("#profile-name").value = "");
-    $("#profile-email") && ($("#profile-email").value = "");
-    $("#profile-username") && ($("#profile-username").textContent = "—");
-    return;
-  }
-  $("#profile-name") && ($("#profile-name").value = state.user.displayName || "");
-  $("#profile-email") && ($("#profile-email").value = state.user.email || "");
-  $("#profile-username") && ($("#profile-username").textContent = state.user.uid.slice(0,6));
-}
 
 /* ==================== Auth listeners ==================== */
 function bindAuthButtons(){
@@ -1846,19 +1673,21 @@ function bindAuthButtons(){
 
 onAuthStateChanged(auth, async (user)=>{
   state.user = user || null;
-  if(user) await ensureAdminBootstrap(user);
-  await ensureTournamentId();
-  if(user) await ensureWalletInit(user.uid);
 
-  listenAdmin(user);
+  listenAdmin(user);      // detecta admin sem criar nada
+  if(user){
+    await ensureWalletInit(user.uid);
+    await loadProfileIntoState(user.uid);
+  }
   updateAuthUI();
   fillProfile();
+
   listenBets();
   listenWallet(user?.uid||null);
   listenBetsFeed();
-  rebuildRankings();
   ensureWinnersTab();
   listenWinners();
+  rebuildRankings();
 });
 
 /* ==================== Init ==================== */
@@ -1874,17 +1703,9 @@ function init(){
   bindProfileForm();
   bindBetForm();
 
-  // Ajuste visual inicial do seletor de ranking (outra proteção)
   const rk = $("#rk-filter"); if(rk) rk.style.cssText = "padding:8px 10px;border:1px solid #D1D5DB;border-radius:10px;background:#F9FAFB;outline:none";
 
-  // Carteira (CCIP)
   renderWalletCard();
-
   if(!_bootShown){ _bootShown = true; showTab("home"); }
 }
 init();
-
-/* ==================== Seed opcional (não exposto na UI) ==================== */
-async function seedExample(){
-  // … (igual de antes; omitido por brevidade)
-}
