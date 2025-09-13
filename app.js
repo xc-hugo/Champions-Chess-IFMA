@@ -1,4 +1,4 @@
-// app.js — Saldo pega 'points' de Wallets (maiúsculo) e Bets (maiúsculo), leitura robusta, increment no crédito
+// app.js — wallets/bets em minúsculo + points lido corretamente + restante das features
 // Firebase v12 (modules)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-app.js";
 import {
@@ -72,9 +72,9 @@ const auth = getAuth(app);
 const db   = getFirestore(app);
 const rtdb = getDatabase(app);
 
-// Coleções (maiusculização para casar com seu Firestore)
-const C_WALLETS = "Wallets";
-const C_BETS    = "Bets";
+// Coleções (minúsculo, conforme seu Firestore)
+const C_WALLETS = "wallets";
+const C_BETS    = "bets";
 
 // Admins fixos (opcional)
 const ADMIN_EMAILS = [
@@ -202,13 +202,8 @@ function setChatEnabled(enabled){
 function updateBetFormEnabled(){
   const form = $("#bet-form");
   if(!form) return;
-  const all = form.querySelectorAll("select,input,textarea,button");
   const submit = form.querySelector('button[type="submit"], .btn[type="submit"], .btn-primary');
   const can = !!state.user && (state.wallet >= BET_COST);
-  all.forEach(el=>{
-    if(el.type === "submit") return;
-    el.disabled = !state.user ? true : el.disabled && !can ? true : el.disabled && can ? false : el.disabled;
-  });
   if(submit) submit.disabled = !can;
   const hint = ensureOddsHint();
   if(hint){
@@ -242,7 +237,7 @@ function updateAuthUI(){
     setChatEnabled(false);
   }
 
-  // aposta só logado (e com saldo — reforço de UI)
+  // aposta só logado + saldo
   const betForm = $("#bet-form");
   betForm && betForm.querySelectorAll("input,select,button,textarea").forEach(i=> i.disabled = !state.user);
   updateBetFormEnabled();
@@ -290,6 +285,14 @@ function fillProfile(){
 }
 
 /* ==================== Carteira (CCIP) ==================== */
+function _coercePoints(p){
+  if(typeof p === "string"){
+    const parsed = parseFloat(String(p).replace(",","."));
+    if(Number.isFinite(parsed)) return parsed;
+    return 0;
+  }
+  return Number.isFinite(p) ? p : 0;
+}
 function listenWallet(uid){
   if(state.listeners.wallet) state.listeners.wallet();
   if(!uid){
@@ -298,14 +301,7 @@ function listenWallet(uid){
   state.listeners.wallet = onSnapshot(doc(db,C_WALLETS,uid),(snap)=>{
     let pts = 0;
     if(snap.exists()){
-      const data = snap.data() || {};
-      // pega 'points' de forma robusta (número ou string)
-      let p = data.points;
-      if(typeof p === "string"){
-        const parsed = parseFloat(String(p).replace(",","."));
-        if(Number.isFinite(parsed)) p = parsed;
-      }
-      if(Number.isFinite(p)) pts = p;
+      pts = _coercePoints(snap.data()?.points);
     }
     state.wallet = pts;
     renderWalletCard();
@@ -336,7 +332,7 @@ async function ensureWalletInit(uid){
   }
 }
 
-/* Estatísticas da carteira (Total apostado soma todos os stakes; Lucro/ROI só com apostas lançadas) */
+/* Estatísticas da carteira */
 function computeMyBetStats(){
   let total=0, wins=0, totalStaked=0, settledStaked=0, returns=0;
   for(const b of state.bets){
@@ -1052,7 +1048,7 @@ async function undoLastBet(){
       const betRef = doc(db,C_BETS, undoState.id);
       const [betSnap, walSnap] = await Promise.all([tx.get(betRef), tx.get(walRef)]);
       if(!betSnap.exists()) throw new Error("Aposta já removida.");
-      const cur = walSnap.exists() && Number.isFinite(walSnap.data().points) ? walSnap.data().points : 0;
+      const cur = _coercePoints(walSnap.exists() ? walSnap.data().points : 0);
       tx.delete(betRef);
       tx.set(walRef, { points: cur + (undoState.refund||BET_COST), updatedAt: serverTimestamp() }, { merge:true });
     });
@@ -1109,16 +1105,10 @@ function bindBetForm(){
         const [betExisting, walSnap] = await Promise.all([tx.get(betRef), tx.get(walRef)]);
         if(betExisting.exists()) throw new Error("Você já apostou nesta partida.");
 
-        let curPts = 0;
+        let curPts = MIN_SEED_POINTS;
         if(walSnap.exists()){
-          let p = walSnap.data().points;
-          if(typeof p === "string"){
-            const parsed = parseFloat(String(p).replace(",","."));
-            if(Number.isFinite(parsed)) p = parsed;
-          }
-          curPts = Number.isFinite(p) ? p : MIN_SEED_POINTS;
+          curPts = _coercePoints(walSnap.data().points);
         }else{
-          curPts = MIN_SEED_POINTS;
           tx.set(walRef, { points: curPts, email: state.user.email||null, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }, { merge:true });
         }
         if(curPts < BET_COST) throw new Error("Saldo insuficiente para apostar.");
@@ -1348,12 +1338,8 @@ async function rebuildRankings(){
 
   const mostPoints = Object.entries(walletsMap)
     .map(([uid,w])=> {
-      let p = w.points;
-      if(typeof p === "string"){
-        const parsed = parseFloat(String(p).replace(",","."));
-        if(Number.isFinite(parsed)) p = parsed;
-      }
-      return { uid, pts: (Number.isFinite(p)?p:0), email: w.email||profilesMap[uid]?.email||"" };
+      const p = _coercePoints(w.points);
+      return { uid, pts: p, email: w.email||profilesMap[uid]?.email||"" };
     })
     .sort((a,b)=> b.pts - a.pts)
     .slice(0,10);
