@@ -1,4 +1,4 @@
-// app.js — wallets/bets em minúsculo + points lido corretamente + restante das features
+// app.js — corrige desconto duplo: só -2 no saldo (wallets.points) e UI atualizada apenas pelo snapshot
 // Firebase v12 (modules)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-app.js";
 import {
@@ -72,14 +72,9 @@ const auth = getAuth(app);
 const db   = getFirestore(app);
 const rtdb = getDatabase(app);
 
-// Coleções (minúsculo, conforme seu Firestore)
+// Coleções
 const C_WALLETS = "wallets";
 const C_BETS    = "bets";
-
-// Admins fixos (opcional)
-const ADMIN_EMAILS = [
-  // "seu.email@ifma.edu.br",
-];
 
 // Apostas / sistema
 const BET_COST   = 2;       // CCIP debitados por aposta
@@ -128,7 +123,7 @@ function initTabs(){
   $("#user-chip")?.addEventListener("click", ()=> showTab("perfil"));
 }
 
-/* ==================== Auth ==================== */
+/* ==================== Auth & Admin ==================== */
 async function loginGoogle(){
   try{ await setPersistence(auth, browserLocalPersistence); }catch(_){}
   const provider = new GoogleAuthProvider();
@@ -145,6 +140,9 @@ async function loginGoogle(){
 }
 async function logout(){ await signOut(auth); }
 
+const ADMIN_EMAILS = [
+  // "seu.email@ifma.edu.br",
+];
 function applyAdminUI(){
   $$(".admin-only").forEach(el => el.classList.toggle("hidden", !state.admin));
   $("#admin-matches-admin")?.remove();
@@ -154,7 +152,6 @@ function applyAdminUI(){
   renderMatches();
   renderPosts();
 }
-
 function listenAdmin(user){
   if(typeof state.listeners.admin === "function"){ state.listeners.admin(); state.listeners.admin=null; }
   if(!user){ state.admin=false; applyAdminUI(); return; }
@@ -190,6 +187,7 @@ function listenAdmin(user){
                                  try{unsubRT();}catch(_){}};  
 }
 
+/* Chat enable/desabilita & aposta habilitada apenas com saldo */
 function setChatEnabled(enabled){
   const input = $("#chat-text");
   const form  = $("#chat-form");
@@ -197,8 +195,6 @@ function setChatEnabled(enabled){
   form && (form.querySelectorAll("input,button,textarea").forEach(el=> el.disabled = !enabled));
   $("#chat-login-hint")?.classList.toggle("hidden", !!enabled);
 }
-
-/* habilita/desabilita aposta conforme login e saldo */
 function updateBetFormEnabled(){
   const form = $("#bet-form");
   if(!form) return;
@@ -211,7 +207,6 @@ function updateBetFormEnabled(){
     else if(state.wallet < BET_COST) hint.textContent = `Saldo insuficiente para apostar (precisa de ${BET_COST} CCIP).`;
   }
 }
-
 function updateAuthUI(){
   const chip = $("#user-chip");
   const email = $("#user-email");
@@ -237,7 +232,6 @@ function updateAuthUI(){
     setChatEnabled(false);
   }
 
-  // aposta só logado + saldo
   const betForm = $("#bet-form");
   betForm && betForm.querySelectorAll("input,select,button,textarea").forEach(i=> i.disabled = !state.user);
   updateBetFormEnabled();
@@ -349,7 +343,6 @@ function computeMyBetStats(){
   const roi = settledStaked ? Math.round((profit/settledStaked)*100) : 0;
   return { total, wins, totalStaked, settledStaked, returns, profit, roi };
 }
-
 function renderWalletCard(){
   const card = $("#apostas .grid-2 .card:first-child");
   if(!card) return;
@@ -426,7 +419,7 @@ function initChat(){
   setChatEnabled(!!state.user);
 }
 
-/* ==================== Players ==================== */
+/* ==================== Players & Tabelas ==================== */
 function listenPlayers(){
   if(state.listeners.players) state.listeners.players();
   state.listeners.players = onSnapshot(query(collection(db,"players"), orderBy("name","asc")), (qs)=>{
@@ -550,8 +543,6 @@ function renderPlayerDetails(playerId){
     showTab("player-profile");
   });
 }
-
-/* ==================== Tabela de grupos ==================== */
 function renderTables(){
   ["A","B"].forEach(g=>{
     const rows = state.players.filter(p=>p.group===g).map(p=>{
@@ -615,7 +606,7 @@ function payoutForPick(m, pick){
   return { probPct, payout };
 }
 
-/* ===== Filtros ===== */
+/* ===== Filtros & Partidas UI ===== */
 function buildOrMountStatusFilter(){
   const filtersBox = $("#partidas .filters");
   if(!filtersBox) return;
@@ -801,7 +792,7 @@ function loadMatchToForm(id){
   $("#admin-matches")?.scrollIntoView({ behavior:"smooth", block:"start" });
 }
 
-/* ==================== Home ==================== */
+/* ==================== Home & Posts ==================== */
 function renderHome(){
   const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
   const pendingScheduled = state.matches.filter(m=> !m.result && !!m.date).slice().sort((a,b)=>parseLocalDate(a.date)-parseLocalDate(b.date));
@@ -848,8 +839,6 @@ function renderHome(){
     });
   }
 }
-
-/* ==================== Posts ==================== */
 function listenPosts(){
   if(state.listeners.posts) state.listeners.posts();
   state.listeners.posts = onSnapshot(query(collection(db,"posts"), orderBy("createdAt","desc")), (qs)=>{
@@ -900,7 +889,7 @@ function bindPostForm(){
   });
 }
 
-/* ==================== Apostas ==================== */
+/* ==================== Apostas (minhas + UI) ==================== */
 function ensureOddsHint(){
   if($("#bet-odds-hint")) return $("#bet-odds-hint");
   const form = $("#bet-form"); if(!form) return null;
@@ -1081,6 +1070,10 @@ function startUndoCountdown(){
 function bindBetForm(){
   $("#bet-form")?.addEventListener("submit", async (e)=>{
     e.preventDefault(); e.stopPropagation();
+
+    const submitBtn = e.target.querySelector('[type="submit"]');
+    if(submitBtn) submitBtn.disabled = true;
+
     try{
       if(!state.user) return alert("Entre com Google para apostar.");
       if(state.wallet < BET_COST) return alert("Saldo insuficiente."); // reforço front
@@ -1121,7 +1114,7 @@ function bindBetForm(){
         tx.update(walRef, { points: curPts - BET_COST, updatedAt: serverTimestamp() });
       });
 
-      // Dados para o feed
+      // Feed (RTDB)
       let profile = null;
       try{
         const ps = await getDoc(doc(db,"profiles", state.user.uid));
@@ -1151,13 +1144,16 @@ function bindBetForm(){
       showUndoBar(`Aposta registrada em <b>${mapP[match.aId]||"?"} × ${mapP[match.bId]||"?"}</b>. Você pode <b>desfazer</b> em até 5s.`);
       startUndoCountdown();
 
-      const el = $("#wallet-ccip");
-      if(el){ const nowPts = Math.max(0, (parseInt(el.textContent||"0",10)||0) - BET_COST); el.textContent = String(nowPts); }
+      // 🔧 NÃO altere saldo manualmente; listener fará isso
+      // (Removido: bloco que fazia parseInt(#wallet-ccip) - BET_COST)
+
       updateBetFormEnabled();
       e.target.reset(); updateOddsHint();
     }catch(err){
       console.error("bet add", err);
       alert(err?.message || "Erro ao registrar aposta. Verifique regras/permissões.");
+    }finally{
+      if(submitBtn) submitBtn.disabled = false;
     }
   });
 }
