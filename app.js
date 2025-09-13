@@ -1,4 +1,4 @@
-// app.js (completo) — correção de permissões/admin/profile
+// app.js (completo) — correções: ID na coluna "Usuário" do feed + limpeza de feed sem aposta correspondente
 // Firebase v12 (modules)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-app.js";
 import {
@@ -18,6 +18,7 @@ import {
 const $  = sel => document.querySelector(sel);
 const $$ = sel => Array.from(document.querySelectorAll(sel));
 const fmt2 = n => (n < 10 ? `0${n}` : `${n}`);
+const esc = (s)=> String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 
 function parseLocalDate(input){
   if(!input) return null;
@@ -45,6 +46,11 @@ function fmtTime(val){
 }
 const clamp01 = x => Math.max(0, Math.min(1, x));
 const clampPct = x => Math.max(0, Math.min(100, x));
+
+/* ID amigável do usuário (prioriza /profiles.userId ou .username, depois prefixo do e-mail, senão uid truncado) */
+function deriveUserId({ profile, email, uid }){
+  return (profile?.userId) || (profile?.username) || (email ? email.split("@")[0] : (uid ? uid.slice(0,6) : "—"));
+}
 
 /* ==================== Config ==================== */
 const firebaseConfig = {
@@ -1080,10 +1086,21 @@ function bindBetForm(){
         tx.update(walRef, { points: curPts - BET_COST, updatedAt: serverTimestamp() });
       });
 
+      // ===== Dados enriquecidos para o feed (Nome e ID do usuário) =====
+      let profile = null;
+      try{
+        const ps = await getDoc(doc(db,"profiles", state.user.uid));
+        if(ps.exists()) profile = ps.data();
+      }catch(_){}
+      const fullName = profile?.displayName || state.user.displayName || state.user.email || "Usuário";
+      const userId = deriveUserId({ profile, email: state.user.email, uid: state.user.uid });
+
       const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
       await rtdbSet(rtdbRef(rtdb, `betsFeed/${feedKey}`), {
         uid: state.user.uid,
-        name: state.user.displayName || state.user.email || "Usuário",
+        email: state.user.email || "",
+        name: fullName,         // Nome da conta (Hugo Oliveira Silva, por ex.)
+        userId,                 // <=== ID visível (s2441)
         matchId,
         aName: mapP[match.aId]||"?",
         bName: mapP[match.bId]||"?",
@@ -1171,16 +1188,19 @@ function addFeedRow(key, v){
   const { status, retorno } = feedRowStatusAndReturn(v);
   const etapa = v.stage==="groups" ? `F. Grupos${v.group?` ${v.group}`:""}` : stageLabel(v.stage);
 
+  const userId = v.userId || (v.email ? v.email.split("@")[0] : (v.uid ? String(v.uid).slice(0,6) : "—"));
+  const fullName = v.name || v.email || userId;
+
   const tr = document.createElement("tr");
   tr.id = `betfeed-${key}`;
   tr.innerHTML = `
-    <td>${(v.name||"—").replace(/</g,"&lt;")}</td>
-    <td>${(v.aName||"?")} × ${(v.bName||"?")}</td>
-    <td>${etapa}</td>
+    <td title="${esc(fullName)}">${esc(userId)}</td>
+    <td>${esc(v.aName||"?")} × ${esc(v.bName||"?")}</td>
+    <td>${esc(etapa)}</td>
     <td>${v.pick==="A"?"Vitória A": v.pick==="B"?"Vitória B":"Empate"}</td>
     <td>${fmtLocalDateStr(when)}</td>
-    <td>${status}</td>
-    <td>${retorno}</td>
+    <td>${esc(status)}</td>
+    <td>${esc(retorno)}</td>
   `;
   tbody.prepend(tr);
   state.feedRowsData[key] = v;
@@ -1193,14 +1213,32 @@ function updateFeedRow(key){
   if(tds.length>=7){ tds[5].textContent = status; tds[6].textContent = retorno; }
 }
 function updateFeedStatuses(){ Object.keys(state.feedRowsData).forEach(updateFeedRow); }
+
+/* Verifica se a aposta do feed existe no Firestore; se não existir, apaga do feed */
+async function verifyFeedBetExists(key, v){
+  try{
+    const snap = await getDoc(doc(db,"bets", key));
+    if(!snap.exists() || (v?.uid && snap.data()?.uid !== v.uid)){
+      await rtdbRemove(rtdbRef(rtdb, `betsFeed/${key}`));
+      delete state.feedRowsData[key];
+    }
+  }catch(err){
+    // silencioso para não quebrar UI
+    console.warn("verifyFeedBetExists:", err?.message);
+  }
+}
+
 function listenBetsFeed(){
   ensureBetsFeedUI();
   const tbody = $("#bets-feed-tbody");
   if(state.listeners.betsFeed) state.listeners.betsFeed();
   const ref = rtdbRef(rtdb, "betsFeed");
 
-  state.listeners.betsFeed = onChildAdded(ref, (snap)=> {
-    const key = snap.key; const v = snap.val(); addFeedRow(key, v);
+  state.listeners.betsFeed = onChildAdded(ref, async (snap)=> {
+    const key = snap.key; const v = snap.val();
+    addFeedRow(key, v);
+    // validação: se não existir a aposta correspondente (mesmo usuário) no Firestore, remove do feed
+    await verifyFeedBetExists(key, v);
   });
   onChildRemoved(ref, (snap)=> {
     const key = snap.key;
