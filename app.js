@@ -1,4 +1,4 @@
-// app.js (completo atualizado)
+// app.js (completo)
 // Firebase v12 (modules)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-app.js";
 import {
@@ -67,6 +67,7 @@ const ADMIN_EMAILS = [
 // Apostas
 const BET_COST   = 2; // debita 2 pontos por aposta
 const MIN_SEED_POINTS = 6;
+const ONE_DAY_MS = 24*60*60*1000;
 
 /* ==================== Estado ==================== */
 const state = {
@@ -79,6 +80,9 @@ const state = {
   wallet: 0,
   listeners: { players:null, matches:null, posts:null, bets:null, wallet:null, chat:null, admin:null },
 };
+
+let _bootShown = false;
+let _autoPostponeLock = false;
 
 /* ==================== Abas ==================== */
 function showTab(tab){
@@ -252,7 +256,7 @@ function initChat(){
 
   const renderItem = (id, msg) => {
     const now = Date.now();
-    if(msg.ts && (now - msg.ts) > 24*60*60*1000) return;
+    if(msg.ts && (now - msg.ts) > ONE_DAY_MS) return;
     const el = document.createElement("div");
     el.className = "chat-item";
     el.id = `chat-${id}`;
@@ -508,18 +512,45 @@ function payoutForPick(m, pick){
   return { probPct, payout };
 }
 
+function buildOrMountStatusFilter(){
+  const filtersBox = $("#partidas .filters");
+  if(!filtersBox) return;
+  if($("#filter-status")) return;
+  const sel = document.createElement("select");
+  sel.id = "filter-status";
+  sel.innerHTML = `
+    <option value="all">Todas</option>
+    <option value="pending">Pendentes</option>
+    <option value="finished">Concluídas</option>
+    <option value="postponed">Adiadas</option>
+  `;
+  sel.addEventListener("change", renderMatches);
+  filtersBox.appendChild(sel);
+}
+
+function matchStatus(m){
+  if(m.result === "postponed") return "postponed";
+  if(m.result === "A" || m.result === "B" || m.result === "draw") return "finished";
+  return "pending";
+}
+
 function listenMatches(){
   if(state.listeners.matches) state.listeners.matches();
-  state.listeners.matches = onSnapshot(query(collection(db,"matches"), orderBy("date","asc")), (qs)=>{
+  state.listeners.matches = onSnapshot(query(collection(db,"matches"), orderBy("date","asc")), async (qs)=>{
     state.matches = qs.docs.map(d=>({id:d.id, ...d.data()}));
+    buildOrMountStatusFilter();
     renderMatches();
     renderTables();
     renderBetsSelect();
     renderHome();
-    // >>> NÃO GERAR POSTS AUTOMÁTICOS AQUI <<<
-    // autoCreatePostsForFinished();
-    // autoPostponeOverdue();
-    // Semis automáticas ok manter (não são "posts")
+
+    // AUTO-ADIAMENTO: 24h após o horário da partida, se ainda sem resultado => "postponed" e cria comunicado (autor: Sistema)
+    if(!_autoPostponeLock){
+      _autoPostponeLock = true;
+      try { await autoPostponeOverdue(); } finally { _autoPostponeLock = false; }
+    }
+
+    // Semis automáticas (ok) + liquidação de apostas do usuário corrente
     autoCreateSemisIfDone();
     settleBetsIfFinished();
   });
@@ -527,11 +558,28 @@ function listenMatches(){
 
 function renderMatches(){
   const filterSel = $("#filter-stage");
-  const filter = filterSel?.value || "groups";
+  const statusSel = $("#filter-status");
+  const stageFilter = filterSel?.value || "groups";
+  const statusFilter = statusSel?.value || "all";
+
   const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
-  const GA = state.matches.filter(m=>m.stage==="groups" && m.group==="A");
-  const GB = state.matches.filter(m=>m.stage==="groups" && m.group==="B");
-  const KO = state.matches.filter(m=>m.stage!=="groups");
+  let items = state.matches.slice();
+
+  // filtro por etapa
+  items = items.filter(m=>{
+    if(stageFilter==="all") return true;
+    if(stageFilter==="groups") return m.stage==="groups";
+    if(stageFilter==="groupA") return m.stage==="groups" && m.group==="A";
+    if(stageFilter==="groupB") return m.stage==="groups" && m.group==="B";
+    if(stageFilter==="semifinal") return m.stage==="semifinal";
+    return true;
+  });
+
+  // filtro por status
+  items = items.filter(m=>{
+    if(statusFilter==="all") return true;
+    return matchStatus(m) === statusFilter;
+  });
 
   const resLabel = (m)=>{
     if(m.result==="A") return mapP[m.aId]||"?";
@@ -563,7 +611,12 @@ function renderMatches(){
     `;
   };
 
-  const mkTable = (items)=>`
+  // agrupar visualmente como antes
+  const GA = items.filter(m=>m.stage==="groups" && m.group==="A");
+  const GB = items.filter(m=>m.stage==="groups" && m.group==="B");
+  const KO = items.filter(m=>m.stage!=="groups");
+
+  const mkTable = (arr)=>`
     <div class="table">
       <table>
         <thead>
@@ -577,26 +630,16 @@ function renderMatches(){
             ${state.admin?`<th>Ações</th>`:""}
           </tr>
         </thead>
-        <tbody>${items.map(mkRow).join("")}</tbody>
+        <tbody>${arr.map(mkRow).join("")}</tbody>
       </table>
     </div>
   `;
 
   let html = "";
-  if(filter==="groups" || filter==="groupA" || filter==="all"){
-    if(filter!=="groupB"){
-      html += `<div class="card" style="margin-bottom:12px"><h3>F. Grupos – Grupo A</h3>${mkTable(GA)}</div>`;
-    }
-  }
-  if(filter==="groups" || filter==="groupB" || filter==="all"){
-    if(filter!=="groupA"){
-      html += `<div class="card" style="margin-bottom:12px"><h3>F. Grupos – Grupo B</h3>${mkTable(GB)}</div>`;
-    }
-  }
-  if(filter==="semifinal" || filter==="all"){
-    const semis = state.matches.filter(m=>m.stage==="semifinal");
-    html += `<div class="card"><h3>Semifinais / KO</h3>${mkTable(semis.length?semis:KO)}</div>`;
-  }
+  if(GA.length) html += `<div class="card" style="margin-bottom:12px"><h3>F. Grupos – Grupo A</h3>${mkTable(GA)}</div>`;
+  if(GB.length) html += `<div class="card" style="margin-bottom:12px"><h3>F. Grupos – Grupo B</h3>${mkTable(GB)}</div>`;
+  if(KO.length) html += `<div class="card"><h3>Fase KO</h3>${mkTable(KO)}</div>`;
+
   $("#matches-list") && ($("#matches-list").innerHTML = html || `<div class="card"><p class="muted">Nenhuma partida.</p></div>`);
 
   if(state.admin){
@@ -605,9 +648,11 @@ function renderMatches(){
     });
   }
 
+  // listeners dos selects (se o HTML já tiver)
   $("#filter-stage")?.addEventListener("change", renderMatches, { once:true });
 }
 
+/* ===== Form Partida ===== */
 function bindMatchForm(){
   const form = $("#match-form");
   const resetBtn = $("#match-reset");
@@ -636,7 +681,7 @@ function bindMatchForm(){
         await addDoc(collection(db,"matches"), { ...payload, createdAt: serverTimestamp() });
       }else{
         await updateDoc(doc(db,"matches",id), { ...payload, updatedAt: serverTimestamp() });
-        // >>> NÃO gera post automático aqui (manual via botão)
+        // Posts automáticos de resultado continuam manuais (botão no Admin)
       }
       form.reset();
       $("#match-id").value="";
@@ -694,13 +739,21 @@ function loadMatchToForm(id){
 /* ==================== Home ==================== */
 function renderHome(){
   const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
-  const scheduled=state.matches.filter(m=>!!m.date).slice().sort((a,b)=>parseLocalDate(a.date)-parseLocalDate(b.date));
+  // Somente partidas PENDENTES com data definida
+  const pendingScheduled = state.matches
+    .filter(m=> !m.result && !!m.date)
+    .slice()
+    .sort((a,b)=>parseLocalDate(a.date)-parseLocalDate(b.date));
+
+  // escolher o dia mais próximo (hoje; senão próximo dia com pendentes)
   const today=new Date(); const s=new Date(today); s.setHours(0,0,0,0); const e=new Date(today); e.setHours(23,59,59,999);
   const isSameDay=(d1,d2)=> d1.getFullYear()==d2.getFullYear()&&d1.getMonth()==d2.getMonth()&&d1.getDate()==d2.getDate();
-  let pick=scheduled.filter(m=>{const d=parseLocalDate(m.date);return d&&d>=s&&d<=e;});
+
+  let pick = pendingScheduled.filter(m=>{const d=parseLocalDate(m.date);return d&&d>=s&&d<=e;});
   if(pick.length===0){
-    let nextDay=null; for(const m of scheduled){ const d=parseLocalDate(m.date); if(d&&d>e){ nextDay=d; break; } }
-    if(nextDay){ pick=scheduled.filter(m=>{const d=parseLocalDate(m.date); return d&&isSameDay(d,nextDay);}); }
+    let nextDay=null; 
+    for(const m of pendingScheduled){ const d=parseLocalDate(m.date); if(d && d>e){ nextDay=d; break; } }
+    if(nextDay){ pick=pendingScheduled.filter(m=>{const d=parseLocalDate(m.date); return d&&isSameDay(d,nextDay);}); }
   }
   pick=pick.slice(0,4);
 
@@ -723,11 +776,11 @@ function renderHome(){
   const table=`
     <table>
       <thead><tr><th>Etapa</th><th>Hora</th><th>Partida</th></tr></thead>
-      <tbody>${rows||"<tr><td colspan='3'>Sem partidas hoje/próximo dia.</td></tr>"}</tbody>
+      <tbody>${rows||"<tr><td colspan='3'>Sem partidas pendentes hoje/próximo dia.</td></tr>"}</tbody>
     </table>
     <div class="home-next-extra">
-      <p><b>Como funciona:</b> exibimos até <b>4 partidas</b> do dia atual; se não houver, mostramos as do próximo dia agendado.</p>
-      <p>Edite datas e resultados na aba <b>Partidas</b>. Resultados confirmados podem gerar comunicados (botões na aba <b>Admin</b>).</p>
+      <p><b>Como funciona:</b> exibimos até <b>4 partidas pendentes</b> do dia atual; se não houver, mostramos as pendentes do próximo dia agendado.</p>
+      <p>Edite datas e resultados na aba <b>Partidas</b>. Adiamentos acontecem automaticamente 24h após o horário sem resultado.</p>
       <p>Na <b>Tabela</b>, a pontuação é válida somente para a <b>Fase de Grupos</b> (Vitória 3 · Empate 1 · Derrota 0).</p>
     </div>
   `;
@@ -759,7 +812,7 @@ function listenPosts(){
 function renderPostItem(p){
   const dt = p.createdAt?.toDate ? p.createdAt.toDate() : (p.createdAt? new Date(p.createdAt) : new Date());
   const hh = fmt2(dt.getHours()), mm = fmt2(dt.getMinutes());
-  const who = p.authorName ? `${p.authorName} &lt;${p.authorEmail||""}&gt;` : (p.authorEmail||"—");
+  const who = p.authorName ? `${p.authorName} ${p.authorEmail?`&lt;${p.authorEmail}&gt;`:""}` : (p.authorEmail||"—");
   return `
     <div class="post" id="post-${p.id}">
       <div>
@@ -859,6 +912,10 @@ function bindBetForm(){
       const match = state.matches.find(m=>m.id===matchId);
       if(!match) return alert("Partida inválida.");
 
+      // valida janela (não permite apostar após o horário marcado)
+      const d = parseLocalDate(match.date);
+      if(d && d.getTime() <= Date.now()) return alert("Apostas só antes do horário da partida.");
+
       // congela payout baseado no estado atual
       const { probPct, payout } = payoutForPick(match, pick);
 
@@ -880,7 +937,7 @@ function bindBetForm(){
         tx.set(walRef, { points: curPts - BET_COST, updatedAt: serverTimestamp() }, { merge:true });
       });
 
-      alert("Aposta registrada!");
+      alert(`Aposta registrada! (custo ${BET_COST} pts)`);
       e.target.reset();
       // permanece na aba Apostas
     }catch(err){
@@ -935,15 +992,17 @@ async function autoCreateSemisIfDone(){
   await addDoc(collection(db,"posts"), {
     title: "Semifinais definidas",
     body: `Semifinal 1: ${mapP[a1]} × ${mapP[b2]}\nSemifinal 2: ${mapP[b1]} × ${mapP[a2]}`,
-    createdAt: serverTimestamp()
+    createdAt: serverTimestamp(),
+    authorName: "Sistema",
+    authorEmail: "sistema@champions"
   });
 }
 
-// >>> NOVO: criação MANUAL de posts de resultado/empate (sem duplicar)
+// >>> Resultado (manual, sem duplicidade; não é automático)
 async function generateResultPostsForFinished(){
   const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
   const existing = {};
-  state.posts.forEach(p=> { if(p.matchId) existing[p.matchId] = true; });
+  state.posts.forEach(p=> { if(p.matchId && (p.type==="result" || !p.type)) existing[p.matchId] = true; });
 
   let created = 0;
   for(const m of state.matches){
@@ -952,42 +1011,54 @@ async function generateResultPostsForFinished(){
     const title = (m.result==="draw")
       ? `Empate entre ${mapP[m.aId]||"?"} e ${mapP[m.bId]||"?"}`
       : `Vitória de ${(m.result==="A"?mapP[m.aId]:mapP[m.bId])||"?"} contra ${(m.result==="A"?mapP[m.bId]:mapP[m.aId])||"?"}`;
-    const body = ""; // sem corpo para evitar duplicidade de "Resultado..."
     await addDoc(collection(db,"posts"), {
       title,
-      body,
+      body: "",
+      type: "result",
       matchId: m.id,
-      createdAt: serverTimestamp()
+      createdAt: serverTimestamp(),
+      // manual → autor é o admin logado
+      authorUid: state.user?.uid||null,
+      authorEmail: state.user?.email||null,
+      authorName: state.user?.displayName||"Admin"
     });
     created++;
   }
   alert(created ? `Publicados ${created} comunicado(s) de resultados.` : "Nenhum comunicado pendente de resultado.");
 }
 
-// >>> NOVO: criação MANUAL de posts de adiamento pendentes (24h após data)
-async function generatePostponedPostsForOverdue(){
-  let created = 0;
+// >>> Adiamento (automático agora, autor Sistema)
+async function autoPostponeOverdue(){
+  const now = Date.now();
+  const createdPosts = [];
   for(const m of state.matches){
-    if(m.stage!=="groups") continue;
-    if(m.result) continue;               // só pendentes
+    if(m.result) continue;          // só pendentes
     if(!m.date) continue;
     const d = parseLocalDate(m.date);
     if(!d) continue;
-    if(Date.now() - d.getTime() < 24*60*60*1000) continue;
+    if((now - d.getTime()) < ONE_DAY_MS) continue;
 
-    // marca como adiado + cria post (se ainda não houver)
+    // marcar como adiado se ainda não está
     await updateDoc(doc(db,"matches",m.id), { result:"postponed", updatedAt: serverTimestamp() });
-    const has = state.posts.some(p=> p.matchId===m.id);
+
+    // cria post só se ainda não existir post de adiamento desse match
+    const has = state.posts.some(p=> p.matchId===m.id && p.type==="postponed");
     if(!has){
       await addDoc(collection(db,"posts"), {
         title: "Partida adiada",
         body: `A partida ${m.code||""} (${m.stage==="groups" ? `F. Grupos${m.group?` ${m.group}`:""}`: stageLabel(m.stage)}) foi adiada por expirar o prazo sem resultado.`,
-        matchId: m.id, createdAt: serverTimestamp()
+        type: "postponed",
+        matchId: m.id,
+        createdAt: serverTimestamp(),
+        authorName: "Sistema",
+        authorEmail: "sistema@champions"
       });
-      created++;
+      createdPosts.push(m.id);
     }
   }
-  alert(created ? `Publicados ${created} comunicado(s) de adiamento.` : "Nenhum adiamento pendente.");
+  if(createdPosts.length){
+    console.log("Adiamentos auto publicados:", createdPosts);
+  }
 }
 
 /* ===== Injeta botões no Admin: publicação manual ===== */
@@ -1018,6 +1089,35 @@ function ensureAdminToolsButtons(){
     btn2.addEventListener("click", generatePostponedPostsForOverdue);
     toolsCard.querySelector("#btn-publish-results")?.after(btn2);
   }
+}
+
+// (Botão “Publicar adiamentos (pendentes)” → modo manual, caso queira forçar)
+async function generatePostponedPostsForOverdue(){
+  let created = 0;
+  const now = Date.now();
+  for(const m of state.matches){
+    if(m.result) continue; // só pendentes
+    if(!m.date) continue;
+    const d = parseLocalDate(m.date);
+    if(!d || (now - d.getTime()) < ONE_DAY_MS) continue;
+
+    await updateDoc(doc(db,"matches",m.id), { result:"postponed", updatedAt: serverTimestamp() });
+
+    const has = state.posts.some(p=> p.matchId===m.id && p.type==="postponed");
+    if(!has){
+      await addDoc(collection(db,"posts"), {
+        title: "Partida adiada",
+        body: `A partida ${m.code||""} (${m.stage==="groups" ? `F. Grupos${m.group?` ${m.group}`:""}`: stageLabel(m.stage)}) foi adiada por expirar o prazo sem resultado.`,
+        type: "postponed",
+        matchId: m.id,
+        createdAt: serverTimestamp(),
+        authorName: "Sistema",
+        authorEmail: "sistema@champions"
+      });
+      created++;
+    }
+  }
+  alert(created ? `Publicados ${created} comunicado(s) de adiamento.` : "Nenhum adiamento pendente.");
 }
 
 /* ==================== Admin: Seed / Players / Semis ==================== */
@@ -1127,20 +1227,6 @@ function fillProfile(){
   $("#profile-username") && ($("#profile-username").textContent = state.user.uid.slice(0,6));
 }
 
-/* ==================== Semis (manual) ==================== */
-function bindSemis(){
-  $("#semi-autofill")?.addEventListener("click", autoCreateSemisIfDone);
-  $("#semi-save")?.addEventListener("click", async ()=>{
-    const a1=$("#semi1-a").value, b2=$("#semi1-b").value;
-    const b1=$("#semi2-a").value, a2=$("#semi2-b").value;
-    const code=$("#semi-code").value.trim()||"SF";
-    if(!(a1&&b2&&b1&&a2)) return alert("Selecione todos os jogadores.");
-    await addDoc(collection(db,"matches"), { aId:a1, bId:b2, stage:"semifinal", code:`${code}1`, result:null, group:null, createdAt: serverTimestamp() });
-    await addDoc(collection(db,"matches"), { aId:b1, bId:a2, stage:"semifinal", code:`${code}2`, result:null, group:null, createdAt: serverTimestamp() });
-    alert("Semifinais criadas.");
-  });
-}
-
 /* ==================== Auth listeners ==================== */
 function bindAuthButtons(){
   $("#btn-open-login")?.addEventListener("click", loginGoogle);
@@ -1170,8 +1256,7 @@ function init(){
   bindMatchForm();
   bindPlayerForm();
   bindProfileForm();
-  bindSemis();
   bindSeed();
-  showTab("home");
+  if(!_bootShown){ _bootShown = true; showTab("home"); }
 }
 init();
