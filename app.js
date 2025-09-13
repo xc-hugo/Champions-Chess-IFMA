@@ -1,4 +1,4 @@
-// app.js (completo, com odds em tempo real, feed RTDB completo, undo fix, rankings, resets)
+// app.js (completo)
 // Firebase v12 (modules)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-app.js";
 import {
@@ -9,7 +9,7 @@ import {
   deleteDoc, onSnapshot, query, where, orderBy, serverTimestamp, runTransaction, writeBatch
 } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-firestore.js";
 import {
-  getDatabase, ref as rtdbRef, set as rtdbSet, onChildAdded, onChildRemoved, remove as rtdbRemove, get as rtdbGet
+  getDatabase, ref as rtdbRef, set as rtdbSet, onChildAdded, onChildRemoved, remove as rtdbRemove
 } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-database.js";
 
 /* ==================== Helpers DOM ==================== */
@@ -32,7 +32,7 @@ function parseLocalDate(input){
   return null;
 }
 function fmtLocalDateStr(val){
-  const d = parseLocalDate(val);
+  const d = val instanceof Date ? val : parseLocalDate(val);
   if(!d) return "—";
   return `${fmt2(d.getDate())}/${fmt2(d.getMonth()+1)}/${d.getFullYear()} ${fmt2(d.getHours())}:${fmt2(d.getMinutes())}`;
 }
@@ -65,8 +65,8 @@ const ADMIN_EMAILS = [
 ];
 
 // Apostas
-const BET_COST   = 2;
-const MIN_SEED_POINTS = 6;
+const BET_COST   = 2;       // CCIP debitados por aposta
+const MIN_SEED_POINTS = 6;  // saldo inicial (CCIP)
 const ONE_DAY_MS = 24*60*60*1000;
 const UNDO_WINDOW_MS = 5000;
 
@@ -78,13 +78,20 @@ const state = {
   matches: [],
   posts: [],
   bets: [],
-  wallet: 0,
+  wallet: 0, // CCIP
   listeners: {
     players:null, matches:null, posts:null, bets:null, wallet:null, chat:null, admin:null, betsFeed:null,
-    rankBets:null, rankWallets:null, rankUsers:null
   },
-  feedRows: {},         // chaves no feed
-  feedRowsData: {},     // key -> { ...dados do feed }
+  feedRowsData: {}, // key -> bet info (RTDB)
+  rankings: {
+    bestByWins: [],
+    mostPoints: [],
+    mostBets: [],
+    usersMap: {},
+    walletsMap: {},
+  },
+  tournamentId: null,
+  winners: [], // lista de torneios
 };
 
 let _bootShown = false;
@@ -142,10 +149,13 @@ async function ensureAdminBootstrap(user){
 }
 function applyAdminUI(){
   $$(".admin-only").forEach(el => el.classList.toggle("hidden", !state.admin));
+  // Oculta o "Gerenciar Partidas (atalho)" e o "Seed"
+  $("#admin-matches-admin")?.remove();
+  $("#seed-btn")?.closest(".row")?.remove();
+  organizeAdminTools();
   updateAuthUI();
   renderMatches();
   renderPosts();
-  ensureAdminToolsButtons();
 }
 function listenAdmin(user){
   if(state.listeners.admin) state.listeners.admin();
@@ -191,11 +201,33 @@ function updateAuthUI(){
     tabAdmin?.classList.add("hidden");
   }
 
+  // Desabilita aposta se não logado
   const betForm = $("#bet-form");
   if(betForm){ betForm.querySelectorAll("input,select,button,textarea").forEach(i=> i.disabled = !state.user); }
 }
 
-/* ==================== Carteira ==================== */
+/* ==================== Config do Torneio ==================== */
+async function ensureTournamentId(){
+  const ref = doc(db,"settings","tournament");
+  const snap = await getDoc(ref);
+  if(!snap.exists()){
+    await setDoc(ref, { current: 1, updatedAt: serverTimestamp() });
+    state.tournamentId = 1;
+  }else{
+    state.tournamentId = Number(snap.data().current)||1;
+  }
+}
+async function incrementTournamentId(){
+  const ref = doc(db,"settings","tournament");
+  await runTransaction(db, async (tx)=>{
+    const s = await tx.get(ref);
+    const cur = s.exists() ? (Number(s.data().current)||1) : 1;
+    tx.set(ref, { current: cur+1, updatedAt: serverTimestamp() });
+  });
+  state.tournamentId = (state.tournamentId||1)+1;
+}
+
+/* ==================== Carteira (CCIP) ==================== */
 async function ensureWalletInit(uid){
   if(!uid) return;
   const refWal = doc(db, "wallets", uid);
@@ -203,14 +235,16 @@ async function ensureWalletInit(uid){
     await runTransaction(db, async (tx)=>{
       const snap = await tx.get(refWal);
       if(!snap.exists()){
-        tx.set(refWal, { points: MIN_SEED_POINTS, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+        tx.set(refWal, { points: MIN_SEED_POINTS, email: auth.currentUser?.email||null, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+      }else if(!snap.data()?.email){
+        tx.set(refWal, { email: auth.currentUser?.email||null, updatedAt: serverTimestamp() }, { merge:true });
       }
     });
   }catch(e){
     try{
       const snap = await getDoc(refWal);
       if(!snap.exists()){
-        await setDoc(refWal, { points: MIN_SEED_POINTS, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+        await setDoc(refWal, { points: MIN_SEED_POINTS, email: auth.currentUser?.email||null, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
       }
     }catch(err){ console.error("ensureWalletInit fallback:", err); }
   }
@@ -219,14 +253,50 @@ function listenWallet(uid){
   if(state.listeners.wallet) state.listeners.wallet();
   if(!uid){
     state.wallet = 0;
-    $("#wallet-points") && ($("#wallet-points").textContent="0");
+    renderWalletCard();
     return;
   }
   state.listeners.wallet = onSnapshot(doc(db,"wallets",uid),(snap)=>{
     const pts = (snap.exists() && typeof snap.data().points==="number") ? snap.data().points : 0;
     state.wallet = pts;
-    $("#wallet-points") && ($("#wallet-points").textContent = String(state.wallet));
+    renderWalletCard();
   });
+}
+function renderWalletCard(){
+  // Reescreve a caixa "Sua Carteira" com mais infos em CCIP
+  const card = $("#apostas .grid-2 .card:first-child");
+  if(!card) return;
+  const my = computeMyBetStats();
+  card.innerHTML = `
+    <h2>Sua Carteira</h2>
+    <div class="table">
+      <table>
+        <tbody>
+          <tr><td><b>Saldo</b></td><td><span id="wallet-ccip">${state.wallet||0}</span> CCIP</td></tr>
+          <tr><td><b>Recompensa base por acerto</b></td><td>+${BET_COST} CCIP (mín.)</td></tr>
+          <tr><td><b>Total apostado</b></td><td>${my.staked} CCIP</td></tr>
+          <tr><td><b>Retornos recebidos</b></td><td>${my.returns} CCIP</td></tr>
+          <tr><td><b>Lucro líquido</b></td><td>${my.returns - my.staked} CCIP</td></tr>
+          <tr><td><b>Apostas</b></td><td>${my.total} (${my.wins} ganhas)</td></tr>
+          <tr><td><b>ROI</b></td><td>${my.total? Math.round(((my.returns - my.staked)/my.staked)*100):0}%</td></tr>
+        </tbody>
+      </table>
+    </div>
+  `;
+  $("#wallet-points") && ($("#wallet-points").textContent = String(state.wallet)); // compatibilidade
+}
+function computeMyBetStats(){
+  let total=0, wins=0, staked=0, returns=0;
+  for(const b of state.bets){
+    total++;
+    staked += b.stake||BET_COST;
+    if(b.status==="ganhou"){
+      const ret = Number.isFinite(b.settledPayout) ? b.settledPayout : (b.payoutPoints||0);
+      wins++;
+      returns += ret;
+    }
+  }
+  return { total, wins, staked, returns };
 }
 
 /* ==================== Chat (RTDB) ==================== */
@@ -294,6 +364,7 @@ function listenPlayers(){
   });
 }
 function renderPlayers(){
+  // esconder busca e select (se existirem)
   $("#player-search")?.closest(".card")?.classList.add("hidden");
   $("#player-select")?.closest(".row")?.classList.add("hidden");
 
@@ -402,7 +473,7 @@ function renderPlayerDetails(playerId){
         <div>
           <div style="font-weight:800">${p.name}</div>
           <div class="muted">Grupo ${p.group}</div>
-          <div class="muted">Grupos: <b>${stats.points} pts</b> • V ${stats.wins} / E ${stats.draws} / D ${stats.losses}</div>
+          <div class="muted">Grupos: <b>${stats.points}</b> • V ${stats.wins} / E ${stats.draws} / D ${stats.losses}</div>
         </div>
       </div>
       <div><button class="btn ghost" id="btn-open-player-profile" data-id="${p.id}">Abrir perfil</button></div>
@@ -521,9 +592,10 @@ function listenMatches(){
     }
 
     autoCreateSemisIfDone();
-    settleBetsIfFinished();     // minhas apostas
-    updateFeedStatuses();       // atualiza status/retorno do feed RTDB conforme resultados
-    rebuildRankings();          // ranking depende de resultados
+    ensureChampionRecorded();  // grava vencedor ao concluir final
+    settleBetsIfFinished();    // minhas apostas
+    updateFeedStatuses();      // feed RTDB
+    rebuildRankings();         // rankings dependem das apostas/retornos
   });
 }
 
@@ -624,7 +696,6 @@ function bindMatchForm(){
   const form = $("#match-form");
   const resetBtn = $("#match-reset");
   const delBtn = $("#match-delete");
-  const btnResetT = $("#btn-reset-tournament");
 
   form?.addEventListener("submit", async (e)=>{
     e.preventDefault(); e.stopPropagation();
@@ -668,16 +739,6 @@ function bindMatchForm(){
     if(!confirm("Excluir esta partida?")) return;
     await deleteDoc(doc(db,"matches",id));
     form.reset(); $("#match-id").value=""; $("#match-date-orig").value="";
-  });
-
-  btnResetT?.addEventListener("click", async ()=>{
-    if(!confirm("Tem certeza que deseja RESETAR o torneio? Isso apaga partidas, posts e apostas.")) return;
-    const b = writeBatch(db);
-    (await getDocs(collection(db,"matches"))).forEach(d=> b.delete(d.ref));
-    (await getDocs(collection(db,"posts"))).forEach(d=> b.delete(d.ref));
-    (await getDocs(collection(db,"bets"))).forEach(d=> b.delete(d.ref));
-    await b.commit();
-    alert("Torneio resetado.");
   });
 }
 function loadMatchToForm(id){
@@ -740,16 +801,11 @@ function renderHome(){
       <tbody>${rows||"<tr><td colspan='3'>Sem partidas pendentes hoje/próximo dia.</td></tr>"}</tbody>
     </table>
     <div class="home-next-extra">
-      <p><b>Como funciona:</b> exibimos até <b>4 partidas pendentes</b> do dia atual; se não houver, mostramos as pendentes do próximo dia agendado.</p>
-      <p>Edite datas e resultados na aba <b>Partidas</b>. Adiamentos acontecem automaticamente 24h após o horário sem resultado.</p>
-      <p>Na <b>Tabela</b>, a pontuação é válida somente para a <b>Fase de Grupos</b> (Vitória 3 · Empate 1 · Derrota 0).</p>
+      <p>Exibimos até <b>4 partidas pendentes</b> do dia atual; se não houver, mostramos as pendentes do próximo dia agendado.</p>
+      <p>Adiamentos acontecem automaticamente <b>24h</b> após o horário sem resultado.</p>
     </div>
   `;
   $("#home-next") && ($("#home-next").innerHTML=table);
-
-  document.querySelectorAll('a[href="#players"]').forEach(a=>{
-    a.addEventListener("click", (e)=>{ e.preventDefault(); showTab("players"); });
-  });
 
   const posts = state.posts.slice(0,3).map(p=>renderPostItem(p)).join("");
   $("#home-posts") && ($("#home-posts").innerHTML = posts || `<p class="muted">Sem comunicados.</p>`);
@@ -833,13 +889,10 @@ function updateOddsHint(){
     return;
   }
   const m = state.matches.find(x=>x.id===matchId);
-  if(!m){
-    hint.textContent = "Partida inválida.";
-    return;
-  }
+  if(!m){ hint.textContent = "Partida inválida."; return; }
   const { payout } = payoutForPick(m, pick);
   const lucro = Math.max(0, payout - BET_COST);
-  hint.innerHTML = `Retorno estimado: <b>${payout}</b> (Lucro: <b>${lucro}</b>)`;
+  hint.innerHTML = `Retorno estimado: <b>${payout}</b> CCIP (Lucro: <b>${lucro}</b>)`;
 }
 ["change","input"].forEach(evt=>{
   $("#bet-match")?.addEventListener(evt, updateOddsHint);
@@ -849,7 +902,7 @@ function updateOddsHint(){
 /* ==================== Apostas (Minhas) ==================== */
 function listenBets(){
   if(state.listeners.bets) state.listeners.bets();
-  if(!state.user){ state.bets=[]; renderBetsTable(); renderBetsSelect(); return; }
+  if(!state.user){ state.bets=[]; renderBetsTable(); renderBetsSelect(); renderWalletCard(); return; }
 
   state.listeners.bets = onSnapshot(
     query(collection(db,"bets"), where("uid","==",state.user.uid)),
@@ -864,6 +917,7 @@ function listenBets(){
       state.bets = list.sort((a,b)=> b.__ts - a.__ts);
       renderBetsTable();
       renderBetsSelect();
+      renderWalletCard();
       renderMatches();
     },
     (err)=> console.error("listenBets error:", err)
@@ -872,7 +926,7 @@ function listenBets(){
 function renderBetsTable(){
   const tbody = $("#bets-list");
   if(!tbody) return;
-  // Ajusta cabeçalho para 6 colunas (Partida, Etapa, Palpite, Data/Hora, Status, Retorno)
+  // Cabeçalho fixo (Partida, Etapa, Palpite, Data/Hora, Status, Retorno)
   const thead = tbody.closest("table")?.querySelector("thead");
   if(thead){
     thead.innerHTML = `
@@ -904,7 +958,7 @@ function renderBetsTable(){
       <td>${b.pick==="A"?"Vitória A": b.pick==="B"?"Vitória B":"Empate"}</td>
       <td>${created}</td>
       <td>${statusStr}</td>
-      <td>${retorno}</td>
+      <td>${retorno} CCIP</td>
     </tr>`;
   }).join("");
 }
@@ -920,7 +974,7 @@ function renderBetsSelect(){
   });
   sel.innerHTML = `<option value="">— selecione —</option>` + upcoming.map(m=>{
     const pn = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
-    return `<option value="${m.id}">${pn[m.aId]||"?"} × ${pn[m.bId]||"?"} — ${stageLabel(m.stage)}${m.group?` ${m.group}`:""}</option>`;
+    return `<option value="${m.id}">${pn[m.aId]||"?"} × ${pn[m.bId]||"?"} — ${stageLabel(m.stage)}${m.group?` ${m.group}`:""} ${m.code?`(${m.code})`:""}</option>`;
   }).join("");
   $("#bet-pick")?.style.setProperty("width","100%");
   $("#bet-match")?.style.setProperty("width","100%");
@@ -929,19 +983,15 @@ function renderBetsSelect(){
 function formatBetStatus(b){
   const lucro = Math.max(0, (b.payoutPoints||0) - (b.stake||BET_COST));
   if(!b.status || b.status === "pendente"){
-    return `Pendente – Lucro: ${lucro}${b.payoutPoints?` (Retorno: ${b.payoutPoints})`:""}`;
+    return `Pendente – Lucro: ${lucro}`;
   }
   if(b.status === "ganhou"){
     const ret = Number.isFinite(b.settledPayout) ? b.settledPayout : (b.payoutPoints||0);
     const luc = Math.max(0, ret - (b.stake||BET_COST));
     return `Ganhou +${ret} (Lucro: ${luc})`;
   }
-  if(b.status === "perdeu"){
-    return `Perdeu`;
-  }
-  if(b.status === "adiada" || b.status === "postponed"){
-    return `Adiada`;
-  }
+  if(b.status === "perdeu")  return `Perdeu`;
+  if(b.status === "postponed" || b.status==="adiada") return `Adiada`;
   return b.status;
 }
 
@@ -964,11 +1014,11 @@ function ensureUndoBar(){
   $("#bet-undo-btn")?.addEventListener("click", undoLastBet);
   return bar;
 }
-function showUndoBar(msg, seconds){
+function showUndoBar(msg){
   const bar = ensureUndoBar();
   if(!bar) return;
   $("#bet-undo-text").innerHTML = msg;
-  $("#bet-undo-count").textContent = `${seconds}s`;
+  $("#bet-undo-count").textContent = `5s`;
   bar.style.display = "flex";
 }
 function hideUndoBar(){
@@ -983,20 +1033,18 @@ async function undoLastBet(){
       const walRef = doc(db,"wallets",state.user.uid);
       const betRef = doc(db,"bets", undoState.id);
 
-      // === LEITURAS PRIMEIRO ===
+      // Leituras antes de escritas
       const [betSnap, walSnap] = await Promise.all([tx.get(betRef), tx.get(walRef)]);
       if(!betSnap.exists()) throw new Error("Aposta já removida.");
-
       const cur = walSnap.exists() && typeof walSnap.data().points==="number" ? walSnap.data().points : 0;
 
-      // === ESCRITAS DEPOIS ===
       tx.delete(betRef);
       tx.set(walRef, { points: cur + (undoState.refund||BET_COST), updatedAt: serverTimestamp() }, { merge:true });
     });
     if(undoState.feedKey){
       await rtdbRemove(rtdbRef(rtdb, `betsFeed/${undoState.feedKey}`)).catch(()=>{});
     }
-    alert("Aposta desfeita e pontos devolvidos.");
+    alert("Aposta desfeita e CCIP devolvidos.");
   }catch(err){
     console.error("undo bet:", err);
     alert(err?.message || "Não foi possível desfazer.");
@@ -1019,7 +1067,7 @@ function startUndoCountdown(){
     }
   };
   tick();
-  undoState.timer = setInterval(tick, 250);
+  undoState.timer = setInterval(tick, 200);
 }
 
 /* ==================== Submit Aposta ==================== */
@@ -1047,7 +1095,7 @@ function bindBetForm(){
         const walRef = doc(db,"wallets",state.user.uid);
         const betRef = doc(db,"bets", betDocId);
 
-        // LEITURAS
+        // Leitura
         const [betExisting, walSnap] = await Promise.all([tx.get(betRef), tx.get(walRef)]);
         if(betExisting.exists()) throw new Error("Você já apostou nesta partida.");
 
@@ -1056,17 +1104,18 @@ function bindBetForm(){
           curPts = walSnap.data().points;
         }else{
           curPts = MIN_SEED_POINTS;
-          tx.set(walRef, { points: curPts, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }, { merge:true });
+          tx.set(walRef, { points: curPts, email: state.user.email||null, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }, { merge:true });
         }
         if(curPts < BET_COST) throw new Error("Saldo insuficiente para apostar.");
 
-        // ESCRITAS
+        // Escritas
         tx.set(betRef, {
           uid: state.user.uid, matchId, pick,
           stake: BET_COST,
           pickProb: probPct,
           payoutPoints: payout,
-          createdAt: serverTimestamp(), status: "pendente"
+          createdAt: serverTimestamp(), status: "pendente",
+          tournament: state.tournamentId||1
         });
         tx.update(walRef, { points: curPts - BET_COST, updatedAt: serverTimestamp() });
       });
@@ -1090,11 +1139,11 @@ function bindBetForm(){
         id: betDocId, matchId, stake: BET_COST, refund: BET_COST,
         until: Date.now() + UNDO_WINDOW_MS, timer: null, feedKey
       };
-      showUndoBar(`Aposta registrada em <b>${mapP[match.aId]||"?"} × ${mapP[match.bId]||"?"}</b>. Você pode <b>desfazer</b> em até 5s.`, 5);
+      showUndoBar(`Aposta registrada em <b>${mapP[match.aId]||"?"} × ${mapP[match.bId]||"?"}</b>. Você pode <b>desfazer</b> em até 5s.`);
       startUndoCountdown();
 
-      // ajuste otimista do saldo
-      const el = $("#wallet-points");
+      // ajuste otimista do saldo visual
+      const el = $("#wallet-ccip");
       if(el){ const nowPts = Math.max(0, (parseInt(el.textContent||"0",10)||0) - BET_COST); el.textContent = String(nowPts); }
       e.target.reset();
       updateOddsHint();
@@ -1155,12 +1204,11 @@ function ensureBetsFeedUI(){
   apSec.appendChild(card);
 }
 function feedRowStatusAndReturn(v){
-  // Calcula status/retorno a partir de state.matches
   const m = state.matches.find(x=>x.id===v.matchId);
-  if(!m || !m.result) return { status:"Pendente", retorno:v.payout||"-" };
+  if(!m || !m.result) return { status:"Pendente", retorno:(v.payout??"-")+" CCIP" };
   if(m.result==="postponed") return { status:"Adiada", retorno:"-" };
   const won = (v.pick==="draw" && m.result==="draw") || (v.pick==="A" && m.result==="A") || (v.pick==="B" && m.result==="B");
-  return { status: won?"Ganhou":"Perdeu", retorno: won?(v.payout||"-"):"-" };
+  return { status: won?"Ganhou":"Perdeu", retorno: won?(v.payout+" CCIP"):"-" };
 }
 function addFeedRow(key, v){
   const tbody = $("#bets-feed-tbody");
@@ -1179,11 +1227,12 @@ function addFeedRow(key, v){
     <td>${(v.aName||"?")} × ${(v.bName||"?")}</td>
     <td>${etapa}</td>
     <td>${v.pick==="A"?"Vitória A": v.pick==="B"?"Vitória B":"Empate"}</td>
-    <td>${fmt2(when.getDate())}/${fmt2(when.getMonth()+1)}/${when.getFullYear()} ${fmt2(when.getHours())}:${fmt2(when.getMinutes())}</td>
+    <td>${fmtLocalDateStr(when)}</td>
     <td>${status}</td>
     <td>${retorno}</td>
   `;
   tbody.prepend(tr);
+  state.feedRowsData[key] = v;
 }
 function updateFeedRow(key){
   const v = state.feedRowsData[key];
@@ -1209,22 +1258,19 @@ function listenBetsFeed(){
   state.listeners.betsFeed = onChildAdded(ref, (snap)=> {
     const key = snap.key;
     const v = snap.val();
-    state.feedRows[key] = true;
-    state.feedRowsData[key] = v;
     addFeedRow(key, v);
   });
   onChildRemoved(ref, (snap)=> {
     const key = snap.key;
-    delete state.feedRows[key];
     delete state.feedRowsData[key];
     $(`#betfeed-${key}`)?.remove();
-    if(Object.keys(state.feedRows).length===0){
+    if(!tbody.querySelector("tr")) {
       tbody.innerHTML = `<tr><td class="muted" colspan="7">Sem apostas no feed.</td></tr>`;
     }
   });
 }
 
-/* ==================== Rankings ==================== */
+/* ==================== Rankings (tabelas + filtro) ==================== */
 function ensureRankingsUI(){
   if($("#rankings-card")) return;
   const apSec = $("#apostas");
@@ -1234,37 +1280,38 @@ function ensureRankingsUI(){
   card.id = "rankings-card";
   card.innerHTML = `
     <h2>Rankings (Top 10)</h2>
-    <div class="grid-3">
-      <div>
-        <h3>Melhor Apostador</h3>
-        <ol id="rk-best-bettor" class="list"></ol>
-        <p class="muted">Critério: maior taxa de acerto (min. 3 apostas; desempate por nº de acertos).</p>
-      </div>
-      <div>
-        <h3>Mais Pontos</h3>
-        <ol id="rk-most-points" class="list"></ol>
-      </div>
-      <div>
-        <h3>Mais Apostas</h3>
-        <ol id="rk-most-bets" class="list"></ol>
-      </div>
+    <div class="row" style="gap:8px;align-items:center">
+      <label>Mostrar:</label>
+      <select id="rk-filter">
+        <option value="best">Melhor Apostador (ganhas)</option>
+        <option value="points">Mais CCIP</option>
+        <option value="bets">Mais Apostas</option>
+      </select>
     </div>
+    <div class="table" style="margin-top:8px">
+      <table>
+        <thead id="rk-head"></thead>
+        <tbody id="rk-body"></tbody>
+      </table>
+    </div>
+    <p class="muted" id="rk-footnote" style="margin-top:6px"></p>
   `;
   apSec.appendChild(card);
+  $("#rk-filter").addEventListener("change", renderRankingsTable);
 }
 function niceName(uid, usersMap, walletsMap){
   const u = usersMap[uid];
   if(u?.displayName) return u.displayName;
-  if(walletsMap[uid]?.email) return walletsMap[uid].email;
-  return uid.slice(0,6);
+  const w = walletsMap[uid];
+  if(w?.name) return w.name;
+  return (u?.email || w?.email || uid)?.split("@")[0] || uid.slice(0,6);
 }
 async function rebuildRankings(){
   ensureRankingsUI();
-  // snapshots
   const [betsSnap, walletsSnap, usersSnap] = await Promise.all([
     getDocs(collection(db,"bets")),
     getDocs(collection(db,"wallets")),
-    getDocs(collection(db,"users")).catch(()=>({forEach:()=>{}})) // users pode não existir
+    getDocs(collection(db,"users")).catch(()=>({forEach:()=>{}}))
   ]);
 
   const usersMap = {};
@@ -1273,14 +1320,12 @@ async function rebuildRankings(){
   const walletsMap = {};
   walletsSnap.forEach(d=> walletsMap[d.id] = d.data());
 
-  // contagem aposta e acertos (inferidos pelas partidas!)
   const byUser = {}; // uid -> {total,wins}
   betsSnap.forEach(d=>{
     const b = d.data();
     const uid = b.uid; if(!uid) return;
     if(!byUser[uid]) byUser[uid] = { total:0, wins:0 };
     byUser[uid].total++;
-
     const m = state.matches.find(x=>x.id===b.matchId);
     if(m && m.result && m.result!=="postponed"){
       const ok = (b.pick==="draw" && m.result==="draw") || (b.pick==="A" && m.result==="A") || (b.pick==="B" && m.result==="B");
@@ -1288,49 +1333,78 @@ async function rebuildRankings(){
     }
   });
 
-  // Melhor Apostador
-  const best = Object.entries(byUser)
-    .filter(([,v])=> v.total>=3)
-    .map(([uid,v])=> ({ uid, rate: v.total? v.wins/v.total : 0, wins:v.wins, total:v.total }))
-    .sort((a,b)=> (b.rate - a.rate) || (b.wins - a.wins))
+  // Melhor Apostador = mais apostas ganhas (desempate: taxa e total)
+  const bestByWins = Object.entries(byUser)
+    .map(([uid,v])=> ({ uid, wins:v.wins, total:v.total, rate: v.total? v.wins/v.total : 0 }))
+    .sort((a,b)=> (b.wins - a.wins) || (b.rate - a.rate) || (b.total - a.total))
     .slice(0,10);
 
-  const elBest = $("#rk-best-bettor");
-  if(elBest){
-    elBest.innerHTML = best.length ? best.map((r,i)=>{
-      const nm = niceName(r.uid, usersMap, walletsMap);
-      return `<li><b>${nm}</b> — ${(r.rate*100).toFixed(0)}% (${r.wins}/${r.total})</li>`;
-    }).join("") : `<li class="muted">Sem dados suficientes.</li>`;
-  }
-
-  // Mais pontos (carteira)
   const mostPoints = Object.entries(walletsMap)
-    .map(([uid,w])=> ({ uid, pts: (typeof w.points==="number"?w.points:0) }))
+    .map(([uid,w])=> ({ uid, pts: (typeof w.points==="number"?w.points:0), email: w.email||usersMap[uid]?.email||"" }))
     .sort((a,b)=> b.pts - a.pts)
     .slice(0,10);
-  const elPts = $("#rk-most-points");
-  if(elPts){
-    elPts.innerHTML = mostPoints.length ? mostPoints.map(r=>{
-      const nm = niceName(r.uid, usersMap, walletsMap);
-      return `<li><b>${nm}</b> — ${r.pts} pts</li>`;
-    }).join("") : `<li class="muted">Sem dados.</li>`;
-  }
 
-  // Mais apostas
   const mostBets = Object.entries(byUser)
     .map(([uid,v])=>({ uid, total:v.total }))
     .sort((a,b)=> b.total - a.total)
     .slice(0,10);
-  const elMB = $("#rk-most-bets");
-  if(elMB){
-    elMB.innerHTML = mostBets.length ? mostBets.map(r=>{
-      const nm = niceName(r.uid, usersMap, walletsMap);
-      return `<li><b>${nm}</b> — ${r.total} apostas</li>`;
-    }).join("") : `<li class="muted">Sem dados.</li>`;
+
+  state.rankings = { bestByWins, mostPoints, mostBets, usersMap, walletsMap };
+  renderRankingsTable();
+}
+function renderRankingsTable(){
+  const head = $("#rk-head");
+  const body = $("#rk-body");
+  const note = $("#rk-footnote");
+  if(!head || !body) return;
+  const mode = $("#rk-filter")?.value || "best";
+  const { usersMap, walletsMap } = state.rankings;
+
+  if(mode==="best"){
+    head.innerHTML = `<tr><th>Nome</th><th>E-mail</th><th>Usuário</th><th>Apostas Ganhas</th><th>Total</th><th>Taxa</th></tr>`;
+    body.innerHTML = state.rankings.bestByWins.map(r=>{
+      const email = usersMap[r.uid]?.email || walletsMap[r.uid]?.email || "—";
+      const usr = (usersMap[r.uid]?.email||walletsMap[r.uid]?.email||r.uid).split("@")[0];
+      return `<tr>
+        <td>${niceName(r.uid, usersMap, walletsMap)}</td>
+        <td>${email}</td>
+        <td>${usr}</td>
+        <td>${r.wins}</td>
+        <td>${r.total}</td>
+        <td>${Math.round(r.rate*100)}%</td>
+      </tr>`;
+    }).join("") || `<tr><td class="muted" colspan="6">Sem dados.</td></tr>`;
+    note.textContent = "Critério: maior número de apostas ganhas (desempate por taxa de acerto e total de apostas).";
+  }else if(mode==="points"){
+    head.innerHTML = `<tr><th>Nome</th><th>E-mail</th><th>Usuário</th><th>CCIP</th></tr>`;
+    body.innerHTML = state.rankings.mostPoints.map(r=>{
+      const email = r.email || usersMap[r.uid]?.email || "—";
+      const usr = (email||r.uid).split("@")[0];
+      return `<tr>
+        <td>${niceName(r.uid, usersMap, walletsMap)}</td>
+        <td>${email}</td>
+        <td>${usr}</td>
+        <td>${r.pts}</td>
+      </tr>`;
+    }).join("") || `<tr><td class="muted" colspan="4">Sem dados.</td></tr>`;
+    note.textContent = "Saldo atual de CCIP.";
+  }else{ // bets
+    head.innerHTML = `<tr><th>Nome</th><th>E-mail</th><th>Usuário</th><th>Apostas</th></tr>`;
+    body.innerHTML = state.rankings.mostBets.map(r=>{
+      const email = usersMap[r.uid]?.email || walletsMap[r.uid]?.email || "—";
+      const usr = (email||r.uid).split("@")[0];
+      return `<tr>
+        <td>${niceName(r.uid, usersMap, walletsMap)}</td>
+        <td>${email}</td>
+        <td>${usr}</td>
+        <td>${r.total}</td>
+      </tr>`;
+    }).join("") || `<tr><td class="muted" colspan="4">Sem dados.</td></tr>`;
+    note.textContent = "Quantidade total de apostas realizadas.";
   }
 }
 
-/* ==================== Semis + Publicações manuais ==================== */
+/* ==================== Semis, Resultados & Comunicados Detalhados ==================== */
 async function autoCreateSemisIfDone(){
   const groupsDone = ["A","B"].every(g=>{
     const ms = state.matches.filter(m=>m.stage==="groups" && m.group===g);
@@ -1356,12 +1430,14 @@ async function autoCreateSemisIfDone(){
   const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
   await addDoc(collection(db,"posts"), {
     title: "Semifinais definidas",
-    body: `Semifinal 1: ${mapP[a1]} × ${mapP[b2]}\nSemifinal 2: ${mapP[b1]} × ${mapP[a2]}`,
+    body: `Semifinal 1 (SF1): ${mapP[a1]} × ${mapP[b2]}\nSemifinal 2 (SF2): ${mapP[b1]} × ${mapP[a2]}`,
     createdAt: serverTimestamp(),
     authorName: "Sistema",
     authorEmail: "sistema@champions"
   });
 }
+
+// resultado → posts manuais (sem duplicidade) com detalhes
 async function generateResultPostsForFinished(){
   const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
   const existing = {};
@@ -1371,11 +1447,18 @@ async function generateResultPostsForFinished(){
   for(const m of state.matches){
     if(!m.result || m.result==="postponed") continue;
     if(existing[m.id]) continue;
+    const when = fmtLocalDateStr(m.date||null);
+    const etapa = m.stage==="groups" ? `F. Grupos${m.group?` ${m.group}`:""}` : stageLabel(m.stage);
     const title = (m.result==="draw")
-      ? `Empate entre ${mapP[m.aId]||"?"} e ${mapP[m.bId]||"?"}`
-      : `Vitória de ${(m.result==="A"?mapP[m.aId]:mapP[m.bId])||"?"} contra ${(m.result==="A"?mapP[m.bId]:mapP[m.aId])||"?"}`;
+      ? `Empate: ${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}`
+      : `Vitória de ${(m.result==="A"?mapP[m.aId]:mapP[m.bId])||"?"}`;
+    const body = [
+      `Etapa: ${etapa}${m.code?` • Código: ${m.code}`:""}`,
+      `Data/Hora: ${when}`,
+      `Placar: ${m.result==="draw" ? "Empate" : (m.result==="A"? `${mapP[m.aId]} venceu ${mapP[m.bId]}` : `${mapP[m.bId]} venceu ${mapP[m.aId]}`)}`
+    ].join("\n");
     await addDoc(collection(db,"posts"), {
-      title, body: "", type: "result", matchId: m.id,
+      title, body, type: "result", matchId: m.id,
       createdAt: serverTimestamp(),
       authorUid: state.user?.uid||null, authorEmail: state.user?.email||null, authorName: state.user?.displayName||"Admin"
     });
@@ -1383,8 +1466,11 @@ async function generateResultPostsForFinished(){
   }
   alert(created ? `Publicados ${created} comunicado(s) de resultados.` : "Nenhum comunicado pendente de resultado.");
 }
+
+// adiamento automático mais detalhado
 async function autoPostponeOverdue(){
   const now = Date.now();
+  const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
   for(const m of state.matches){
     if(m.result) continue;
     if(!m.date) continue;
@@ -1398,7 +1484,10 @@ async function autoPostponeOverdue(){
     if(!has){
       await addDoc(collection(db,"posts"), {
         title: "Partida adiada",
-        body: `A partida ${m.code||""} (${m.stage==="groups" ? `F. Grupos${m.group?` ${m.group}`:""}`: stageLabel(m.stage)}) foi adiada por expirar o prazo sem resultado.`,
+        body: `Etapa: ${m.stage==="groups" ? `F. Grupos${m.group?` ${m.group}`:""}`: stageLabel(m.stage)}${m.code?` • Código: ${m.code}`:""}
+Data/Hora original: ${fmtLocalDateStr(m.date)}
+Confronto: ${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}
+Motivo: expiração de 24h sem resultado registrado.`,
         type: "postponed",
         matchId: m.id,
         createdAt: serverTimestamp(),
@@ -1409,91 +1498,220 @@ async function autoPostponeOverdue(){
   }
 }
 
-/* ==================== Ferramentas Admin ==================== */
-function ensureAdminToolsButtons(){
+/* ==================== Winners (aba dinâmica) ==================== */
+function ensureWinnersTab(){
+  if($("#vencedores")) return;
+  // botão no navbar
+  const navCenter = document.querySelector(".nav-center");
+  if(navCenter && !navCenter.querySelector('[data-tab="vencedores"]')){
+    const btn = document.createElement("button");
+    btn.className = "tab";
+    btn.dataset.tab = "vencedores";
+    btn.textContent = "Vencedores";
+    btn.addEventListener("click", ()=> showTab("vencedores"));
+    navCenter.appendChild(btn);
+  }
+  // seção
+  const main = document.querySelector("main.container");
+  const sec = document.createElement("section");
+  sec.id = "vencedores";
+  sec.className = "view";
+  sec.innerHTML = `
+    <div class="card">
+      <h2>Vencedores por torneio</h2>
+      <div class="table">
+        <table>
+          <thead>
+            <tr>
+              <th>Torneio</th>
+              <th>Campeão</th>
+              <th>Vice</th>
+              <th>Ver campanha</th>
+            </tr>
+          </thead>
+          <tbody id="winners-body">
+            <tr><td class="muted" colspan="4">Sem registros.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  main?.appendChild(sec);
+}
+function listenWinners(){
+  ensureWinnersTab();
+  onSnapshot(query(collection(db,"winners"), orderBy("tournament","desc")), (qs)=>{
+    state.winners = qs.docs.map(d=>({id:d.id, ...d.data()}));
+    renderWinners();
+  });
+}
+function renderWinners(){
+  const tbody = $("#winners-body");
+  if(!tbody) return;
+  if(!state.winners.length){
+    tbody.innerHTML = `<tr><td class="muted" colspan="4">Sem registros.</td></tr>`;
+    return;
+  }
+  const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
+  tbody.innerHTML = state.winners.map(w=>{
+    const champ = mapP[w.champion]||"—";
+    const vice  = mapP[w.runnerUp]||"—";
+    return `<tr>
+      <td>#${w.tournament}</td>
+      <td>${champ}</td>
+      <td>${vice}</td>
+      <td><button class="btn small" data-campaign="${w.id}">Ver campanha</button></td>
+    </tr>`;
+  }).join("");
+
+  tbody.querySelectorAll("button[data-campaign]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const id = btn.getAttribute("data-campaign");
+      const w = state.winners.find(x=>x.id===id);
+      if(!w){ alert("Registro não encontrado."); return; }
+      showCampaignModal(w);
+    });
+  });
+}
+function showCampaignModal(w){
+  const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
+  const rows = (w.campaign||[]).map(c=>{
+    return `<tr>
+      <td>${c.stage}</td>
+      <td>${fmtLocalDateStr(c.date)}</td>
+      <td>${mapP[c.aId]||"?"} × ${mapP[c.bId]||"?"}</td>
+      <td>${c.result==="A"?mapP[c.aId] : c.result==="B"? mapP[c.bId] : c.result==="draw" ? "Empate" : c.result}</td>
+      <td>${c.code||"—"}</td>
+    </tr>`;
+  }).join("") || `<tr><td class="muted" colspan="5">Sem dados.</td></tr>`;
+
+  const modal = document.createElement("div");
+  modal.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;padding:16px;z-index:9999;";
+  modal.innerHTML = `
+    <div style="background:#fff;max-width:780px;width:100%;border-radius:12px;padding:12px">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <h3 style="margin:0">Campanha do Campeão — Torneio #${w.tournament}</h3>
+        <button id="camp-close" class="btn ghost small">Fechar</button>
+      </div>
+      <div class="table" style="margin-top:8px;max-height:60vh;overflow:auto">
+        <table>
+          <thead><tr><th>Etapa</th><th>Data/Hora</th><th>Partida</th><th>Resultado</th><th>Código</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.querySelector("#camp-close")?.addEventListener("click", ()=> modal.remove());
+}
+async function ensureChampionRecorded(){
+  // final concluída do torneio atual → grava em winners se ainda não gravado
+  const finals = state.matches.filter(m=> m.stage==="final" && (m.result==="A" || m.result==="B"));
+  if(!finals.length) return;
+  const m = finals[0];
+  // já existe winner para o tournamentId?
+  const snap = await getDocs(query(collection(db,"winners"), where("tournament","==", state.tournamentId||1)));
+  if(!snap.empty) return;
+
+  const champ = m.result==="A" ? m.aId : m.bId;
+  const vice  = m.result==="A" ? m.bId : m.aId;
+
+  // campanha = todas as partidas do campeão no torneio atual (por simplicidade, todas as matches onde ele aparece)
+  const campaign = state.matches
+    .filter(x=> x.aId===champ || x.bId===champ)
+    .map(x=> ({ aId:x.aId, bId:x.bId, stage: x.stage==="groups" ? `F. Grupos${x.group?` ${x.group}`:""}` : stageLabel(x.stage), date:x.date||null, code:x.code||null, result:x.result||null }));
+
+  await addDoc(collection(db,"winners"), {
+    tournament: state.tournamentId||1,
+    champion: champ,
+    runnerUp: vice,
+    campaign,
+    createdAt: serverTimestamp()
+  });
+}
+
+/* ==================== Ferramentas Admin (layout + ações) ==================== */
+function organizeAdminTools(){
   if(!state.admin) return;
   const adminView = $("#admin");
   if(!adminView) return;
+
+  // Localiza o card "Ferramentas"
   const toolsCard = Array.from(adminView.querySelectorAll(".card"))
     .find(c => /Ferramentas/i.test(c.textContent || ""));
   if(!toolsCard) return;
 
-  if(!toolsCard.querySelector("#btn-publish-results")){
-    const btn = document.createElement("button");
-    btn.id = "btn-publish-results";
-    btn.className = "btn";
-    btn.style.marginRight = "8px";
-    btn.textContent = "Publicar resultados (pendentes)";
-    btn.addEventListener("click", generateResultPostsForFinished);
-    toolsCard.querySelector("h2")?.after(btn);
+  // Cria um painel grid para botões
+  let panel = toolsCard.querySelector("#admin-tools-panel");
+  if(!panel){
+    panel = document.createElement("div");
+    panel.id = "admin-tools-panel";
+    panel.style.cssText = "display:flex;flex-wrap:wrap;gap:12px;margin-top:8px;";
+    toolsCard.appendChild(panel);
+  }else{
+    panel.innerHTML = ""; // reconstroi
   }
-  if(!toolsCard.querySelector("#btn-publish-postponed")){
-    const btn2 = document.createElement("button");
-    btn2.id = "btn-publish-postponed";
-    btn2.className = "btn ghost";
-    btn2.style.marginRight = "8px";
-    btn2.textContent = "Publicar adiamentos (pendentes)";
-    btn2.addEventListener("click", generatePostponedPostsForOverdue);
-    toolsCard.querySelector("#btn-publish-results")?.after(btn2);
-  }
-  // Apagar todos os comunicados
-  if(!toolsCard.querySelector("#btn-delete-all-posts")){
-    const btn3 = document.createElement("button");
-    btn3.id = "btn-delete-all-posts";
-    btn3.className = "btn danger";
-    btn3.style.marginLeft = "8px";
-    btn3.textContent = "Apagar TODOS os comunicados";
-    btn3.addEventListener("click", async ()=>{
-      if(!confirm("Tem certeza que deseja APAGAR TODOS os comunicados?")) return;
-      const qs = await getDocs(collection(db,"posts"));
-      const b = writeBatch(db);
-      qs.forEach(d=> b.delete(d.ref));
-      await b.commit();
-      alert("Todos os comunicados foram apagados.");
-    });
-    toolsCard.querySelector("#btn-publish-postponed")?.after(btn3);
-  }
-  // Resetar saldos
-  if(!toolsCard.querySelector("#btn-reset-wallets")){
-    const btn4 = document.createElement("button");
-    btn4.id = "btn-reset-wallets";
-    btn4.className = "btn danger";
-    btn4.style.marginLeft = "8px";
-    btn4.textContent = "Resetar saldos (todos)";
-    btn4.addEventListener("click", async ()=>{
-      if(!confirm("Resetar saldos de todos para 6 pontos?")) return;
-      const qs = await getDocs(collection(db,"wallets"));
-      const b = writeBatch(db);
-      qs.forEach(d=> b.set(d.ref, { points: MIN_SEED_POINTS, updatedAt: serverTimestamp() }, { merge:true }));
-      await b.commit();
-      alert("Saldos resetados.");
-    });
-    toolsCard.querySelector("#btn-delete-all-posts")?.after(btn4);
-  }
-  // Resetar apostas e ranking
-  if(!toolsCard.querySelector("#btn-reset-bets")){
-    const btn5 = document.createElement("button");
-    btn5.id = "btn-reset-bets";
-    btn5.className = "btn danger";
-    btn5.style.marginLeft = "8px";
-    btn5.textContent = "Resetar apostas e ranking";
-    btn5.addEventListener("click", async ()=>{
-      if(!confirm("Apagar TODAS as apostas e limpar feed?")) return;
-      const qs = await getDocs(collection(db,"bets"));
-      const b = writeBatch(db);
-      qs.forEach(d=> b.delete(d.ref));
-      await b.commit();
-      // limpa feed RTDB
-      try { await rtdbRemove(rtdbRef(rtdb,"betsFeed")); } catch(_){}
-      alert("Apostas e feed foram resetados.");
-      rebuildRankings();
-    });
-    toolsCard.querySelector("#btn-reset-wallets")?.after(btn5);
-  }
+
+  // Botões
+  const mkBtn = (id, text, cls="btn", onClick=()=>{})=>{
+    const b = document.createElement("button");
+    b.id = id; b.className = cls; b.textContent = text;
+    b.addEventListener("click", onClick);
+    return b;
+  };
+
+  // Ações
+  const btnPublishResults = mkBtn("btn-publish-results", "Publicar resultados (pendentes)", "btn", generateResultPostsForFinished);
+  const btnPublishPostponed = mkBtn("btn-publish-postponed", "Publicar adiamentos (pendentes)", "btn ghost", generatePostponedPostsForOverdue);
+  const btnDeletePosts = mkBtn("btn-delete-all-posts", "Apagar TODOS os comunicados", "btn danger", async ()=>{
+    if(!confirm("Apagar TODOS os comunicados?")) return;
+    const qs = await getDocs(collection(db,"posts"));
+    const b = writeBatch(db);
+    qs.forEach(d=> b.delete(d.ref));
+    await b.commit();
+    alert("Todos os comunicados foram apagados.");
+  });
+  const btnResetWallets = mkBtn("btn-reset-wallets", "Resetar saldos (todos)", "btn danger", async ()=>{
+    if(!confirm("Resetar saldos de todos para 6 CCIP?")) return;
+    const qs = await getDocs(collection(db,"wallets"));
+    const b = writeBatch(db);
+    qs.forEach(d=> b.set(d.ref, { points: MIN_SEED_POINTS, updatedAt: serverTimestamp() }, { merge:true }));
+    await b.commit();
+    alert("Saldos resetados.");
+  });
+  const btnResetBets = mkBtn("btn-reset-bets", "Resetar apostas e ranking", "btn danger", async ()=>{
+    if(!confirm("Apagar TODAS as apostas e limpar feed?")) return;
+    const qs = await getDocs(collection(db,"bets"));
+    const b = writeBatch(db);
+    qs.forEach(d=> b.delete(d.ref));
+    await b.commit();
+    try { await rtdbRemove(rtdbRef(rtdb,"betsFeed")); } catch(_){}
+    alert("Apostas e feed foram resetados.");
+    rebuildRankings();
+  });
+
+  const btnResetAll = mkBtn("btn-reset-all", "Resetar Torneio (TUDO)", "btn danger", async ()=>{
+    if(!confirm("Isto vai APAGAR partidas, apostas, comunicados, limpar feed de apostas e resetar saldos. Continuar?")) return;
+    const b = writeBatch(db);
+    (await getDocs(collection(db,"matches"))).forEach(d=> b.delete(d.ref));
+    (await getDocs(collection(db,"posts"))).forEach(d=> b.delete(d.ref));
+    (await getDocs(collection(db,"bets"))).forEach(d=> b.delete(d.ref));
+    (await getDocs(collection(db,"wallets"))).forEach(d=> b.set(d.ref, { points: MIN_SEED_POINTS, updatedAt: serverTimestamp() }, { merge:true }));
+    await b.commit();
+    try { await rtdbRemove(rtdbRef(rtdb,"betsFeed")); } catch(_){}
+    await incrementTournamentId();
+    alert(`Torneio resetado. Novo ciclo: #${state.tournamentId}.`);
+    rebuildRankings();
+  });
+
+  // monta painel
+  [btnPublishResults, btnPublishPostponed, btnDeletePosts, btnResetWallets, btnResetBets, btnResetAll]
+    .forEach(x=> panel.appendChild(x));
 }
 async function generatePostponedPostsForOverdue(){
   let created = 0;
   const now = Date.now();
+  const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
   for(const m of state.matches){
     if(m.result) continue;
     if(!m.date) continue;
@@ -1506,7 +1724,10 @@ async function generatePostponedPostsForOverdue(){
     if(!has){
       await addDoc(collection(db,"posts"), {
         title: "Partida adiada",
-        body: `A partida ${m.code||""} (${m.stage==="groups" ? `F. Grupos${m.group?` ${m.group}`:""}`: stageLabel(m.stage)}) foi adiada por expirar o prazo sem resultado.`,
+        body: `Etapa: ${m.stage==="groups" ? `F. Grupos${m.group?` ${m.group}`:""}`: stageLabel(m.stage)}${m.code?` • Código: ${m.code}`:""}
+Data/Hora original: ${fmtLocalDateStr(m.date)}
+Confronto: ${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}
+Motivo: expiração de 24h sem resultado registrado.`,
         type: "postponed",
         matchId: m.id,
         createdAt: serverTimestamp(),
@@ -1556,6 +1777,7 @@ function bindAuthButtons(){
 onAuthStateChanged(auth, async (user)=>{
   state.user = user || null;
   if(user) await ensureAdminBootstrap(user);
+  await ensureTournamentId();
   if(user) await ensureWalletInit(user.uid);
 
   listenAdmin(user);
@@ -1565,6 +1787,8 @@ onAuthStateChanged(auth, async (user)=>{
   listenWallet(user?.uid||null);
   listenBetsFeed();
   rebuildRankings();
+  ensureWinnersTab();
+  listenWinners();
 });
 
 /* ==================== Init ==================== */
@@ -1579,65 +1803,63 @@ function init(){
   bindMatchForm();
   bindProfileForm();
   bindBetForm();
-  bindSeed();
-  ensureRankingsUI();
+
+  // Ajuste visual inicial de carteira (CCIP)
+  renderWalletCard();
+
   if(!_bootShown){ _bootShown = true; showTab("home"); }
 }
 init();
 
-/* ==================== Seed (players/matches) ==================== */
-function bindSeed(){
-  $("#seed-btn")?.addEventListener("click", async ()=>{
-    if(!confirm("Criar seed de exemplo (jogadores + partidas de grupos)?")) return;
+/* ==================== Seed (removido da UI; função mantida se quiser usar via console) ==================== */
+async function seedExample(){
+  const namesA = ["Hugo", "Eudison", "Rhuan", "Luís Felipe", "Yuri"];
+  const namesB = ["Kelvin", "Marcos", "Davi", "Alyson", "Wemerson"];
+  const got = await getDocs(collection(db,"players"));
+  if(got.empty){
+    const b = writeBatch(db);
+    [...namesA.map(n=>({name:n,group:"A"})), ...namesB.map(n=>({name:n,group:"B"}))].forEach(p=>{
+      const id = doc(collection(db,"players")).id;
+      b.set(doc(db,"players",id), { name:p.name, group:p.group, createdAt: serverTimestamp() });
+    });
+    await b.commit();
+  }
 
-    const namesA = ["Hugo", "Eudison", "Rhuan", "Luís Felipe", "Yuri"];
-    const namesB = ["Kelvin", "Marcos", "Davi", "Alyson", "Wemerson"];
-    const got = await getDocs(collection(db,"players"));
-    if(got.empty){
-      const b = writeBatch(db);
-      [...namesA.map(n=>({name:n,group:"A"})), ...namesB.map(n=>({name:n,group:"B"}))].forEach(p=>{
-        const id = doc(collection(db,"players")).id;
-        b.set(doc(db,"players",id), { name:p.name, group:p.group, createdAt: serverTimestamp() });
-      });
-      await b.commit();
-    }
+  const allPlayersSnap = await getDocs(collection(db,"players"));
+  const idByName = {}; allPlayersSnap.forEach(d=> idByName[d.data().name] = d.id);
 
-    const allPlayersSnap = await getDocs(collection(db,"players"));
-    const idByName = {}; allPlayersSnap.forEach(d=> idByName[d.data().name] = d.id);
+  const roundsA = [
+    [{a:"Eudison",b:"Yuri"},{a:"Rhuan",b:"Luís Felipe"}],
+    [{a:"Hugo",b:"Yuri"},{a:"Eudison",b:"Rhuan"}],
+    [{a:"Hugo",b:"Luís Felipe"},{a:"Yuri",b:"Rhuan"}],
+    [{a:"Hugo",b:"Rhuan"},{a:"Luís Felipe",b:"Eudison"}],
+    [{a:"Hugo",b:"Eudison"},{a:"Luís Felipe",b:"Yuri"}],
+  ];
+  const roundsB = [
+    [{a:"Marcos",b:"Wemerson"},{a:"Davi",b:"Alyson"}],
+    [{a:"Kelvin",b:"Wemerson"},{a:"Marcos",b:"Davi"}],
+    [{a:"Kelvin",b:"Alyson"},{a:"Wemerson",b:"Davi"}],
+    [{a:"Kelvin",b:"Davi"},{a:"Alyson",b:"Marcos"}],
+    [{a:"Kelvin",b:"Marcos"},{a:"Alyson",b:"Wemerson"}],
+  ];
 
-    const roundsA = [
-      [{a:"Eudison",b:"Yuri"},{a:"Rhuan",b:"Luís Felipe"}],
-      [{a:"Hugo",b:"Yuri"},{a:"Eudison",b:"Rhuan"}],
-      [{a:"Hugo",b:"Luís Felipe"},{a:"Yuri",b:"Rhuan"}],
-      [{a:"Hugo",b:"Rhuan"},{a:"Luís Felipe",b:"Eudison"}],
-      [{a:"Hugo",b:"Eudison"},{a:"Luís Felipe",b:"Yuri"}],
-    ];
-    const roundsB = [
-      [{a:"Marcos",b:"Wemerson"},{a:"Davi",b:"Alyson"}],
-      [{a:"Kelvin",b:"Wemerson"},{a:"Marcos",b:"Davi"}],
-      [{a:"Kelvin",b:"Alyson"},{a:"Wemerson",b:"Davi"}],
-      [{a:"Kelvin",b:"Davi"},{a:"Alyson",b:"Marcos"}],
-      [{a:"Kelvin",b:"Marcos"},{a:"Alyson",b:"Wemerson"}],
-    ];
-
-    const mSnap = await getDocs(collection(db,"matches"));
-    if(mSnap.empty){
-      const b2 = writeBatch(db);
-      let codeN = 1;
-      const addRound = (group, arr)=>{
-        arr.forEach(pair=>{
-          const id = doc(collection(db,"matches")).id;
-          b2.set(doc(db,"matches",id), {
-            aId: idByName[pair.a], bId: idByName[pair.b],
-            stage: "groups", group, date: null, code: `G${group}-${fmt2(codeN++)}`,
-            result: null, createdAt: serverTimestamp()
-          });
+  const mSnap = await getDocs(collection(db,"matches"));
+  if(mSnap.empty){
+    const b2 = writeBatch(db);
+    let codeN = 1;
+    const addRound = (group, arr)=>{
+      arr.forEach(pair=>{
+        const id = doc(collection(db,"matches")).id;
+        b2.set(doc(db,"matches",id), {
+          aId: idByName[pair.a], bId: idByName[pair.b],
+          stage: "groups", group, date: null, code: `G${group}-${fmt2(codeN++)}`,
+          result: null, createdAt: serverTimestamp()
         });
-      };
-      roundsA.forEach(r=> addRound("A", r));
-      roundsB.forEach(r=> addRound("B", r));
-      await b2.commit();
-    }
-    alert("Seed criado.");
-  });
+      });
+    };
+    roundsA.forEach(r=> addRound("A", r));
+    roundsB.forEach(r=> addRound("B", r));
+    await b2.commit();
+  }
+  console.log("Seed criado (via console).");
 }
