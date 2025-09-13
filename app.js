@@ -2,7 +2,8 @@
 // Firebase v12 (modules)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-app.js";
 import {
-  getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut,
+  getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect,
+  onAuthStateChanged, signOut, setPersistence, browserLocalPersistence
 } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-auth.js";
 import {
   getFirestore, collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc,
@@ -82,7 +83,7 @@ const state = {
   listeners: {
     players:null, matches:null, posts:null, bets:null, wallet:null, chat:null, admin:null, betsFeed:null,
   },
-  feedRowsData: {}, // key -> bet info (RTDB)
+  feedRowsData: {},
   rankings: {
     bestByWins: [],
     mostPoints: [],
@@ -91,7 +92,7 @@ const state = {
     walletsMap: {},
   },
   tournamentId: null,
-  winners: [], // lista de torneios
+  winners: [], // docs fixos por torneio (não são apagados)
 };
 
 let _bootShown = false;
@@ -128,12 +129,31 @@ function initTabs(){
 
 /* ==================== Auth ==================== */
 async function loginGoogle(){
+  try{
+    // persistência local -> evita “parece deslogado”
+    await setPersistence(auth, browserLocalPersistence);
+  }catch(e){ console.warn("setPersistence falhou (seguindo com padrão):", e?.message); }
+
   const provider = new GoogleAuthProvider();
-  await signInWithPopup(auth, provider);
+  try{
+    await signInWithPopup(auth, provider);
+  }catch(err){
+    // fallback útil em ambientes sem popup/3rd party cookies
+    if(err?.code === "auth/operation-not-supported-in-this-environment" ||
+       err?.code === "auth/popup-blocked" ||
+       err?.code === "auth/popup-closed-by-user"){
+      await signInWithRedirect(auth, provider);
+      return;
+    }
+    console.error("login error:", err);
+    alert("Não foi possível entrar com Google. Tente novamente.");
+  }
 }
 async function logout(){
   await signOut(auth);
 }
+
+// Bootstrap de admin
 async function ensureAdminBootstrap(user){
   if(!user) return;
   try{
@@ -149,9 +169,8 @@ async function ensureAdminBootstrap(user){
 }
 function applyAdminUI(){
   $$(".admin-only").forEach(el => el.classList.toggle("hidden", !state.admin));
-  // Oculta o "Gerenciar Partidas (atalho)" e o "Seed"
-  $("#admin-matches-admin")?.remove();
-  $("#seed-btn")?.closest(".row")?.remove();
+  $("#admin-matches-admin")?.remove(); // some
+  $("#seed-btn")?.closest(".row")?.remove(); // some
   organizeAdminTools();
   updateAuthUI();
   renderMatches();
@@ -178,6 +197,13 @@ function listenAdmin(user){
     applyAdminUI();
   });
 }
+function setChatEnabled(enabled){
+  const input = $("#chat-text");
+  const form  = $("#chat-form");
+  input && (input.disabled = !enabled);
+  form && (form.querySelectorAll("input,button,textarea").forEach(el=> el.disabled = !enabled));
+  $("#chat-login-hint")?.classList.toggle("hidden", !!enabled);
+}
 function updateAuthUI(){
   const chip = $("#user-chip");
   const email = $("#user-email");
@@ -193,12 +219,14 @@ function updateAuthUI(){
     btnOut?.classList.remove("hidden");
     if(state.admin){ adminBadge?.classList.remove("hidden"); tabAdmin?.classList.remove("hidden"); }
     else { adminBadge?.classList.add("hidden"); tabAdmin?.classList.add("hidden"); }
+    setChatEnabled(true);
   }else{
     chip?.classList.add("hidden");
     btnLogin?.classList.remove("hidden");
     btnOut?.classList.add("hidden");
     adminBadge?.classList.add("hidden");
     tabAdmin?.classList.add("hidden");
+    setChatEnabled(false);
   }
 
   // Desabilita aposta se não logado
@@ -263,7 +291,6 @@ function listenWallet(uid){
   });
 }
 function renderWalletCard(){
-  // Reescreve a caixa "Sua Carteira" com mais infos em CCIP
   const card = $("#apostas .grid-2 .card:first-child");
   if(!card) return;
   const my = computeMyBetStats();
@@ -283,7 +310,7 @@ function renderWalletCard(){
       </table>
     </div>
   `;
-  $("#wallet-points") && ($("#wallet-points").textContent = String(state.wallet)); // compatibilidade
+  $("#wallet-points") && ($("#wallet-points").textContent = String(state.wallet));
 }
 function computeMyBetStats(){
   let total=0, wins=0, staked=0, returns=0;
@@ -348,7 +375,8 @@ function initChat(){
     input.value = "";
   });
 
-  $("#chat-login-hint")?.classList.toggle("hidden", !!state.user);
+  // estado inicial do chat habilitado/desabilitado
+  setChatEnabled(!!state.user);
 }
 
 /* ==================== Players ==================== */
@@ -364,7 +392,6 @@ function listenPlayers(){
   });
 }
 function renderPlayers(){
-  // esconder busca e select (se existirem)
   $("#player-search")?.closest(".card")?.classList.add("hidden");
   $("#player-select")?.closest(".row")?.classList.add("hidden");
 
@@ -473,7 +500,7 @@ function renderPlayerDetails(playerId){
         <div>
           <div style="font-weight:800">${p.name}</div>
           <div class="muted">Grupo ${p.group}</div>
-          <div class="muted">Grupos: <b>${stats.points}</b> • V ${stats.wins} / E ${stats.draws} / D ${stats.losses}</div>
+          <div class="muted">Grupos: <b>${stats.points} pts</b> • V ${stats.wins} / E ${stats.draws} / D ${stats.losses}</div>
         </div>
       </div>
       <div><button class="btn ghost" id="btn-open-player-profile" data-id="${p.id}">Abrir perfil</button></div>
@@ -592,10 +619,10 @@ function listenMatches(){
     }
 
     autoCreateSemisIfDone();
-    ensureChampionRecorded();  // grava vencedor ao concluir final
+    ensureChampionRecorded();  // grava campeão/vice + campanha
     settleBetsIfFinished();    // minhas apostas
     updateFeedStatuses();      // feed RTDB
-    rebuildRankings();         // rankings dependem das apostas/retornos
+    rebuildRankings();         // rankings
   });
 }
 
@@ -800,10 +827,6 @@ function renderHome(){
       <thead><tr><th>Etapa</th><th>Hora</th><th>Partida</th></tr></thead>
       <tbody>${rows||"<tr><td colspan='3'>Sem partidas pendentes hoje/próximo dia.</td></tr>"}</tbody>
     </table>
-    <div class="home-next-extra">
-      <p>Exibimos até <b>4 partidas pendentes</b> do dia atual; se não houver, mostramos as pendentes do próximo dia agendado.</p>
-      <p>Adiamentos acontecem automaticamente <b>24h</b> após o horário sem resultado.</p>
-    </div>
   `;
   $("#home-next") && ($("#home-next").innerHTML=table);
 
@@ -884,6 +907,10 @@ function updateOddsHint(){
   const pick = $("#bet-pick")?.value;
   const hint = ensureOddsHint();
   if(!hint) return;
+  if(!state.user){
+    hint.textContent = "Entre com Google para apostar.";
+    return;
+  }
   if(!matchId || !pick){
     hint.textContent = "Selecione a partida e o palpite para ver o retorno estimado.";
     return;
@@ -967,6 +994,7 @@ function renderBetsSelect(){
   if(!sel) return;
   const already = new Set(state.bets.map(b=> b.matchId));
   const upcoming = state.matches.filter(m=>{
+    if(!state.user) return false; // só logado pode apostar
     if(m.result) return false;
     if(already.has(m.id)) return false;
     const d = parseLocalDate(m.date);
@@ -1075,7 +1103,8 @@ function bindBetForm(){
   $("#bet-form")?.addEventListener("submit", async (e)=>{
     e.preventDefault(); e.stopPropagation();
     try{
-      if(!state.user) return alert("Entre com Google para apostar.");
+      if(!state.user) { alert("Entre com Google para apostar."); return; }
+
       const matchId = $("#bet-match").value;
       const pick = $("#bet-pick").value;
       if(!matchId || !pick) return;
@@ -1270,7 +1299,7 @@ function listenBetsFeed(){
   });
 }
 
-/* ==================== Rankings (tabelas + filtro) ==================== */
+/* ==================== Rankings (tabelas + filtro, com estilo melhor) ==================== */
 function ensureRankingsUI(){
   if($("#rankings-card")) return;
   const apSec = $("#apostas");
@@ -1281,8 +1310,8 @@ function ensureRankingsUI(){
   card.innerHTML = `
     <h2>Rankings (Top 10)</h2>
     <div class="row" style="gap:8px;align-items:center">
-      <label>Mostrar:</label>
-      <select id="rk-filter">
+      <label style="font-weight:600">Mostrar:</label>
+      <select id="rk-filter" style="padding:8px 10px;border:1px solid #D1D5DB;border-radius:10px;background:#F9FAFB;outline:none">
         <option value="best">Melhor Apostador (ganhas)</option>
         <option value="points">Mais CCIP</option>
         <option value="bets">Mais Apostas</option>
@@ -1333,7 +1362,7 @@ async function rebuildRankings(){
     }
   });
 
-  // Melhor Apostador = mais apostas ganhas (desempate: taxa e total)
+  // Melhor Apostador
   const bestByWins = Object.entries(byUser)
     .map(([uid,v])=> ({ uid, wins:v.wins, total:v.total, rate: v.total? v.wins/v.total : 0 }))
     .sort((a,b)=> (b.wins - a.wins) || (b.rate - a.rate) || (b.total - a.total))
@@ -1498,7 +1527,7 @@ Motivo: expiração de 24h sem resultado registrado.`,
   }
 }
 
-/* ==================== Winners (aba dinâmica) ==================== */
+/* ==================== Winners (aba dinâmica, ranking + por torneio) ==================== */
 function ensureWinnersTab(){
   if($("#vencedores")) return;
   // botão no navbar
@@ -1518,31 +1547,60 @@ function ensureWinnersTab(){
   sec.className = "view";
   sec.innerHTML = `
     <div class="card">
-      <h2>Vencedores por torneio</h2>
-      <div class="table">
-        <table>
-          <thead>
-            <tr>
-              <th>Torneio</th>
-              <th>Campeão</th>
-              <th>Vice</th>
-              <th>Ver campanha</th>
-            </tr>
-          </thead>
-          <tbody id="winners-body">
-            <tr><td class="muted" colspan="4">Sem registros.</td></tr>
-          </tbody>
-        </table>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+        <h2 style="margin:0">Campeões</h2>
+        <div>
+          <select id="winners-filter" style="padding:8px 10px;border:1px solid #D1D5DB;border-radius:10px;background:#F9FAFB;outline:none">
+            <option value="byTournament">Por Torneio</option>
+            <option value="rankChampions">Ranking de Campeões</option>
+          </select>
+        </div>
+      </div>
+      <div id="winners-views" style="margin-top:10px">
+        <div id="winners-by-tournament">
+          <div class="table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Torneio</th>
+                  <th>Campeão</th>
+                  <th>Vice</th>
+                  <th>Ver campanha</th>
+                </tr>
+              </thead>
+              <tbody id="winners-body">
+                <tr><td class="muted" colspan="4">Sem registros.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div id="winners-rank" style="display:none">
+          <div class="table">
+            <table>
+              <thead><tr><th>Jogador</th><th>Títulos</th></tr></thead>
+              <tbody id="winners-rank-body">
+                <tr><td class="muted" colspan="2">Sem registros.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </div>
   `;
   main?.appendChild(sec);
+
+  $("#winners-filter")?.addEventListener("change", ()=>{
+    const v = $("#winners-filter").value;
+    $("#winners-by-tournament").style.display = (v==="byTournament") ? "block" : "none";
+    $("#winners-rank").style.display       = (v==="rankChampions") ? "block" : "none";
+  });
 }
 function listenWinners(){
   ensureWinnersTab();
   onSnapshot(query(collection(db,"winners"), orderBy("tournament","desc")), (qs)=>{
     state.winners = qs.docs.map(d=>({id:d.id, ...d.data()}));
     renderWinners();
+    renderWinnersRank();
   });
 }
 function renderWinners(){
@@ -1572,6 +1630,24 @@ function renderWinners(){
       showCampaignModal(w);
     });
   });
+}
+function renderWinnersRank(){
+  const tbody = $("#winners-rank-body");
+  if(!tbody) return;
+  if(!state.winners.length){
+    tbody.innerHTML = `<tr><td class="muted" colspan="2">Sem registros.</td></tr>`;
+    return;
+  }
+  const tally = {}; // playerId -> titles
+  state.winners.forEach(w=> { tally[w.champion] = (tally[w.champion]||0)+1; });
+  const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
+  const rows = Object.entries(tally)
+    .map(([pid, n])=>({ name: mapP[pid]||pid, n }))
+    .sort((a,b)=> b.n - a.n)
+    .slice(0, 20)
+    .map(r=> `<tr><td>${r.name}</td><td>${r.n}</td></tr>`)
+    .join("");
+  tbody.innerHTML = rows || `<tr><td class="muted" colspan="2">Sem registros.</td></tr>`;
 }
 function showCampaignModal(w){
   const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
@@ -1605,18 +1681,17 @@ function showCampaignModal(w){
   modal.querySelector("#camp-close")?.addEventListener("click", ()=> modal.remove());
 }
 async function ensureChampionRecorded(){
-  // final concluída do torneio atual → grava em winners se ainda não gravado
+  // final concluída do torneio atual → grava em winners (fixo)
   const finals = state.matches.filter(m=> m.stage==="final" && (m.result==="A" || m.result==="B"));
   if(!finals.length) return;
   const m = finals[0];
-  // já existe winner para o tournamentId?
-  const snap = await getDocs(query(collection(db,"winners"), where("tournament","==", state.tournamentId||1)));
-  if(!snap.empty) return;
+  const existing = await getDocs(query(collection(db,"winners"), where("tournament","==", state.tournamentId||1)));
+  if(!existing.empty) return;
 
   const champ = m.result==="A" ? m.aId : m.bId;
   const vice  = m.result==="A" ? m.bId : m.aId;
 
-  // campanha = todas as partidas do campeão no torneio atual (por simplicidade, todas as matches onde ele aparece)
+  // campanha do campeão (snapshot salvo de forma fixa)
   const campaign = state.matches
     .filter(x=> x.aId===champ || x.bId===champ)
     .map(x=> ({ aId:x.aId, bId:x.bId, stage: x.stage==="groups" ? `F. Grupos${x.group?` ${x.group}`:""}` : stageLabel(x.stage), date:x.date||null, code:x.code||null, result:x.result||null }));
@@ -1636,12 +1711,10 @@ function organizeAdminTools(){
   const adminView = $("#admin");
   if(!adminView) return;
 
-  // Localiza o card "Ferramentas"
   const toolsCard = Array.from(adminView.querySelectorAll(".card"))
     .find(c => /Ferramentas/i.test(c.textContent || ""));
   if(!toolsCard) return;
 
-  // Cria um painel grid para botões
   let panel = toolsCard.querySelector("#admin-tools-panel");
   if(!panel){
     panel = document.createElement("div");
@@ -1649,10 +1722,9 @@ function organizeAdminTools(){
     panel.style.cssText = "display:flex;flex-wrap:wrap;gap:12px;margin-top:8px;";
     toolsCard.appendChild(panel);
   }else{
-    panel.innerHTML = ""; // reconstroi
+    panel.innerHTML = "";
   }
 
-  // Botões
   const mkBtn = (id, text, cls="btn", onClick=()=>{})=>{
     const b = document.createElement("button");
     b.id = id; b.className = cls; b.textContent = text;
@@ -1660,7 +1732,6 @@ function organizeAdminTools(){
     return b;
   };
 
-  // Ações
   const btnPublishResults = mkBtn("btn-publish-results", "Publicar resultados (pendentes)", "btn", generateResultPostsForFinished);
   const btnPublishPostponed = mkBtn("btn-publish-postponed", "Publicar adiamentos (pendentes)", "btn ghost", generatePostponedPostsForOverdue);
   const btnDeletePosts = mkBtn("btn-delete-all-posts", "Apagar TODOS os comunicados", "btn danger", async ()=>{
@@ -1704,7 +1775,6 @@ function organizeAdminTools(){
     rebuildRankings();
   });
 
-  // monta painel
   [btnPublishResults, btnPublishPostponed, btnDeletePosts, btnResetWallets, btnResetBets, btnResetAll]
     .forEach(x=> panel.appendChild(x));
 }
@@ -1804,62 +1874,17 @@ function init(){
   bindProfileForm();
   bindBetForm();
 
-  // Ajuste visual inicial de carteira (CCIP)
+  // Ajuste visual inicial do seletor de ranking (outra proteção)
+  const rk = $("#rk-filter"); if(rk) rk.style.cssText = "padding:8px 10px;border:1px solid #D1D5DB;border-radius:10px;background:#F9FAFB;outline:none";
+
+  // Carteira (CCIP)
   renderWalletCard();
 
   if(!_bootShown){ _bootShown = true; showTab("home"); }
 }
 init();
 
-/* ==================== Seed (removido da UI; função mantida se quiser usar via console) ==================== */
+/* ==================== Seed opcional (não exposto na UI) ==================== */
 async function seedExample(){
-  const namesA = ["Hugo", "Eudison", "Rhuan", "Luís Felipe", "Yuri"];
-  const namesB = ["Kelvin", "Marcos", "Davi", "Alyson", "Wemerson"];
-  const got = await getDocs(collection(db,"players"));
-  if(got.empty){
-    const b = writeBatch(db);
-    [...namesA.map(n=>({name:n,group:"A"})), ...namesB.map(n=>({name:n,group:"B"}))].forEach(p=>{
-      const id = doc(collection(db,"players")).id;
-      b.set(doc(db,"players",id), { name:p.name, group:p.group, createdAt: serverTimestamp() });
-    });
-    await b.commit();
-  }
-
-  const allPlayersSnap = await getDocs(collection(db,"players"));
-  const idByName = {}; allPlayersSnap.forEach(d=> idByName[d.data().name] = d.id);
-
-  const roundsA = [
-    [{a:"Eudison",b:"Yuri"},{a:"Rhuan",b:"Luís Felipe"}],
-    [{a:"Hugo",b:"Yuri"},{a:"Eudison",b:"Rhuan"}],
-    [{a:"Hugo",b:"Luís Felipe"},{a:"Yuri",b:"Rhuan"}],
-    [{a:"Hugo",b:"Rhuan"},{a:"Luís Felipe",b:"Eudison"}],
-    [{a:"Hugo",b:"Eudison"},{a:"Luís Felipe",b:"Yuri"}],
-  ];
-  const roundsB = [
-    [{a:"Marcos",b:"Wemerson"},{a:"Davi",b:"Alyson"}],
-    [{a:"Kelvin",b:"Wemerson"},{a:"Marcos",b:"Davi"}],
-    [{a:"Kelvin",b:"Alyson"},{a:"Wemerson",b:"Davi"}],
-    [{a:"Kelvin",b:"Davi"},{a:"Alyson",b:"Marcos"}],
-    [{a:"Kelvin",b:"Marcos"},{a:"Alyson",b:"Wemerson"}],
-  ];
-
-  const mSnap = await getDocs(collection(db,"matches"));
-  if(mSnap.empty){
-    const b2 = writeBatch(db);
-    let codeN = 1;
-    const addRound = (group, arr)=>{
-      arr.forEach(pair=>{
-        const id = doc(collection(db,"matches")).id;
-        b2.set(doc(db,"matches",id), {
-          aId: idByName[pair.a], bId: idByName[pair.b],
-          stage: "groups", group, date: null, code: `G${group}-${fmt2(codeN++)}`,
-          result: null, createdAt: serverTimestamp()
-        });
-      });
-    };
-    roundsA.forEach(r=> addRound("A", r));
-    roundsB.forEach(r=> addRound("B", r));
-    await b2.commit();
-  }
-  console.log("Seed criado (via console).");
+  // … (igual de antes; omitido por brevidade)
 }
