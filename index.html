@@ -124,6 +124,7 @@
               <option value="semifinal">Semifinal</option>
               <option value="all">Todas</option>
             </select>
+            <!-- O filtro de status é injetado pelo app.js (id="filter-status") -->
           </div>
         </div>
         <div id="matches-list"></div>
@@ -279,12 +280,16 @@
 
         <div class="card">
           <h2>Nova Aposta</h2>
-          <form id="bet-form" class="form">
-            <div class="row">
+          <!-- Bloqueia a navegação nativa SEM depender do JS -->
+          <form id="bet-form" class="form" onsubmit="event.preventDefault()" autocomplete="off">
+            <!-- Cada linha em 1 coluna para os dois campos ficarem do MESMO tamanho (full-width) -->
+            <div class="row" style="grid-template-columns: 1fr">
               <label>Partida</label>
               <select id="bet-match" required>
                 <option value="">— selecione —</option>
               </select>
+            </div>
+            <div class="row" style="grid-template-columns: 1fr">
               <label>Palpite</label>
               <select id="bet-pick" required>
                 <option value="">— selecione —</option>
@@ -327,10 +332,11 @@
         <h2>Chat da Comunidade</h2>
         <p class="muted">Apenas usuários logados podem enviar. Mensagens expiram após 24h.</p>
         <div id="chat-list" class="chat-list"></div>
-        <form id="chat-form" class="form chat-form">
-          <div class="row">
-            <label>Mensagem</label>
+        <form id="chat-form" class="form chat-form" onsubmit="event.preventDefault()">
+          <div class="row" style="grid-template-columns: 1fr auto">
+            <label style="display:none">Mensagem</label>
             <input id="chat-text" placeholder="Escreva aqui..." maxlength="500"/>
+            <button class="btn" type="submit">Enviar</button>
           </div>
         </form>
         <p id="chat-login-hint" class="muted hidden">Entre para participar do chat.</p>
@@ -392,6 +398,7 @@
           <h2>Ferramentas</h2>
           <button id="seed-btn" class="btn ghost">Seed de Exemplo</button>
           <p class="muted">Preenche jogadores/rodadas de teste.</p>
+          <!-- Os botões de publicação manual (resultados/adiamentos) são injetados pelo app.js -->
         </div>
       </div>
 
