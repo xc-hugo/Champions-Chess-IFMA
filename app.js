@@ -246,16 +246,19 @@ async function ensureWalletInit(uid){
 function listenWallet(uid){
   if(state.listeners.wallet) state.listeners.wallet();
   if(!uid){
-    state.wallet=0;
-    $("#wallet-points") && ($("#wallet-points").textContent="0");
+    state.wallet = 0;
+    const el = $("#wallet-points");
+    if (el) el.textContent = "0";
     return;
   }
   state.listeners.wallet = onSnapshot(doc(db,"wallets",uid),(snap)=>{
     const pts = (snap.exists() && typeof snap.data().points==="number") ? snap.data().points : 0;
-    state.wallet = Math.max(pts, MIN_SEED_POINTS);
-    $("#wallet-points") && ($("#wallet-points").textContent = String(state.wallet));
+    state.wallet = pts; // <<< sem clamp
+    const el = $("#wallet-points");
+    if (el) el.textContent = String(state.wallet);
   });
 }
+
 
 /* ==================== Chat (RTDB) ==================== */
 function initChat(){
@@ -860,15 +863,30 @@ function bindPostForm(){
 function listenBets(){
   if(state.listeners.bets) state.listeners.bets();
   if(!state.user){ state.bets=[]; renderBets(); return; }
+
+  // Sem orderBy para não exigir índice composto; ordenamos no cliente
   state.listeners.bets = onSnapshot(
-    query(collection(db,"bets"), where("uid","==",state.user.uid), orderBy("createdAt","desc")),
+    query(collection(db,"bets"), where("uid","==",state.user.uid)),
     (qs)=>{
-      state.bets = qs.docs.map(d=>({id:d.id, ...d.data()}));
-      renderBets(); renderMatches();
+      const list = qs.docs.map(d=>{
+        const data = d.data();
+        // normaliza createdAt para poder ordenar no cliente
+        const ts = data.createdAt?.toMillis ? data.createdAt.toMillis()
+                 : data.createdAt?.seconds ? data.createdAt.seconds*1000
+                 : 0;
+        return { id:d.id, __ts:ts, ...data };
+      });
+      state.bets = list.sort((a,b)=> b.__ts - a.__ts);
+      renderBets();
+      renderMatches();
     },
-    (err)=> console.error("listenBets", err)
+    (err)=> {
+      console.error("listenBets error:", err);
+      // Dica: se quiser usar orderBy('createdAt','desc'), crie o índice composto sugerido no console.
+    }
   );
 }
+
 function renderBetsSelect(){
   const sel = $("#bet-match");
   if(!sel) return;
@@ -1274,3 +1292,4 @@ function init(){
   if(!_bootShown){ _bootShown = true; showTab("home"); }
 }
 init();
+
