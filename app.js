@@ -1,4 +1,4 @@
-// app.js (completo, apostas e carteira corrigidas)
+// app.js (completo, com feed RTDB, undo 5s, 1 aposta por jogo, payout/lucro visível)
 // Firebase v12 (modules)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-app.js";
 import {
@@ -9,7 +9,7 @@ import {
   deleteDoc, onSnapshot, query, where, orderBy, serverTimestamp, runTransaction, writeBatch
 } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-firestore.js";
 import {
-  getDatabase, ref as rtdbRef, push, onChildAdded, onChildRemoved, remove
+  getDatabase, ref as rtdbRef, set as rtdbSet, onChildAdded, onChildRemoved, remove as rtdbRemove
 } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-database.js";
 
 /* ==================== Helpers DOM ==================== */
@@ -68,6 +68,7 @@ const ADMIN_EMAILS = [
 const BET_COST   = 2;             // debita 2 pontos por aposta
 const MIN_SEED_POINTS = 6;        // usado só na criação da carteira
 const ONE_DAY_MS = 24*60*60*1000;
+const UNDO_WINDOW_MS = 5000;
 
 /* ==================== Estado ==================== */
 const state = {
@@ -78,11 +79,15 @@ const state = {
   posts: [],
   bets: [],
   wallet: 0,
-  listeners: { players:null, matches:null, posts:null, bets:null, wallet:null, chat:null, admin:null },
+  listeners: { players:null, matches:null, posts:null, bets:null, wallet:null, chat:null, admin:null, betsFeed:null },
+  feedRows: {}, // betsFeed row cache
 };
 
 let _bootShown = false;
 let _autoPostponeLock = false;
+
+// Undo state (aposta)
+let undoState = null; // { id, matchId, stake, refund, until, timer, feedKey }
 
 /* ==================== Abas ==================== */
 function showTab(tab){
@@ -208,7 +213,7 @@ function updateAuthUI(){
 }
 
 /* ==================== Carteira ==================== */
-// >>> IMPORTANTÍSSIMO: agora só CRIA se não existir; NUNCA força para 6 se já existir
+// Só CRIA se não existir; NUNCA força para 6 se já existir
 async function ensureWalletInit(uid){
   if(!uid) return;
   const refWal = doc(db, "wallets", uid);
@@ -217,10 +222,9 @@ async function ensureWalletInit(uid){
       const snap = await tx.get(refWal);
       if(!snap.exists()){
         tx.set(refWal, { points: MIN_SEED_POINTS, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
-      } // se existe, não mexe
+      }
     });
   }catch(e){
-    // fallback: apenas cria se não existe
     try{
       const snap = await getDoc(refWal);
       if(!snap.exists()){
@@ -239,7 +243,7 @@ function listenWallet(uid){
   }
   state.listeners.wallet = onSnapshot(doc(db,"wallets",uid),(snap)=>{
     const pts = (snap.exists() && typeof snap.data().points==="number") ? snap.data().points : 0;
-    state.wallet = pts; // <<< sem clamp
+    state.wallet = pts;
     const el = $("#wallet-points");
     if (el) el.textContent = String(state.wallet);
   });
@@ -247,7 +251,7 @@ function listenWallet(uid){
 
 /* ==================== Chat (RTDB) ==================== */
 function initChat(){
-  if(state.listeners.chat) return; // único
+  if(state.listeners.chat) return;
   const list = $("#chat-list");
   const form = $("#chat-form");
   const input = $("#chat-text");
@@ -272,10 +276,10 @@ function initChat(){
       el.querySelector(".btn-del-chat")?.addEventListener("click", async ()=>{
         if(!confirm("Apagar esta mensagem do chat?")) return;
         try{
-          await remove(rtdbRef(rtdb, `chat/${id}`));
+          await rtdbRemove(rtdbRef(rtdb, `chat/${id}`));
         }catch(err){
           console.error(err);
-          alert("Sem permissão para apagar no RTDB. Ajuste suas RTDB Rules ou use custom claim {admin:true}.");
+          alert("Sem permissão para apagar no RTDB.");
         }
       });
     }
@@ -289,7 +293,7 @@ function initChat(){
     if(!state.user) return alert("Entre com Google para enviar.");
     const text = (input?.value||"").trim();
     if(!text) return;
-    await push(chatRef, {
+    await rtdbSet(rtdbRef(rtdb, `chat/${Date.now()}_${Math.random().toString(36).slice(2)}`), {
       uid: state.user.uid,
       name: state.user.displayName || state.user.email,
       email: state.user.email || "",
@@ -314,7 +318,6 @@ function listenPlayers(){
   });
 }
 function renderPlayers(){
-  // esconder busca e select (pedido anterior)
   $("#player-search")?.closest(".card")?.classList.add("hidden");
   $("#player-select")?.closest(".row")?.classList.add("hidden");
 
@@ -339,7 +342,6 @@ function renderPlayers(){
   });
 }
 function renderPlayerSelects(){
-  // Para formulários (partidas/semis)
   const sA = $("#match-a"), sB = $("#match-b");
   if(sA && sB){
     const opts = state.players.map(p=> `<option value="${p.id}">${p.name}</option>`).join("");
@@ -498,12 +500,12 @@ function probVED(m){
     D: Math.round(clampPct(pB*100))  // vitória B
   };
 }
+// odds/payout a partir da probabilidade (menos provável paga mais)
 function payoutForPick(m, pick){
   const p = probVED(m);
   const probPct = pick==="A" ? p.A : pick==="B" ? p.D : p.E;
   let pr = probPct/100;
   if(pr <= 0) pr = 0.01;
-  // decimal odds com leve "house edge" e caps
   const dec = Math.max(1.5, Math.min(5.0, 0.9*(1/pr)));
   const payout = Math.max(2, Math.round(BET_COST * dec)); // pontos creditados se vencer
   return { probPct, payout };
@@ -548,7 +550,7 @@ function listenMatches(){
     }
 
     autoCreateSemisIfDone();
-    settleBetsIfFinished();
+    settleBetsIfFinished(); // atualiza status das minhas apostas
   });
 }
 
@@ -840,12 +842,11 @@ function bindPostForm(){
   });
 }
 
-/* ==================== Apostas ==================== */
+/* ==================== Apostas (Minhas) ==================== */
 function listenBets(){
   if(state.listeners.bets) state.listeners.bets();
-  if(!state.user){ state.bets=[]; renderBets(); return; }
+  if(!state.user){ state.bets=[]; renderBets(); renderBetsSelect(); return; }
 
-  // Sem orderBy para não exigir índice composto; ordenamos no cliente
   state.listeners.bets = onSnapshot(
     query(collection(db,"bets"), where("uid","==",state.user.uid)),
     (qs)=>{
@@ -858,7 +859,8 @@ function listenBets(){
       });
       state.bets = list.sort((a,b)=> b.__ts - a.__ts);
       renderBets();
-      renderMatches();
+      renderBetsSelect(); // remove da lista partidas já apostadas
+      renderMatches();    // atualiza probabilidades mostradas
     },
     (err)=> {
       console.error("listenBets error:", err);
@@ -868,8 +870,10 @@ function listenBets(){
 function renderBetsSelect(){
   const sel = $("#bet-match");
   if(!sel) return;
+  const already = new Set(state.bets.map(b=> b.matchId));
   const upcoming = state.matches.filter(m=>{
     if(m.result) return false;
+    if(already.has(m.id)) return false; // já apostou
     const d = parseLocalDate(m.date);
     return !d || d.getTime() > Date.now();
   });
@@ -879,6 +883,23 @@ function renderBetsSelect(){
   }).join("");
   $("#bet-pick")?.style.setProperty("width","100%");
   $("#bet-match")?.style.setProperty("width","100%");
+}
+function formatBetStatus(b){
+  // b.status: pendente/ganhou/perdeu
+  const lucro = Math.max(0, (b.payoutPoints||0) - (b.stake||BET_COST));
+  if(!b.status || b.status === "pendente"){
+    return `Pendente – Lucro: ${lucro}${b.payoutPoints?` (Retorno: ${b.payoutPoints})`:""}`;
+  }
+  if(b.status === "ganhou"){
+    // settledPayout salvo no settle
+    const ret = Number.isFinite(b.settledPayout) ? b.settledPayout : (b.payoutPoints||0);
+    const luc = Math.max(0, ret - (b.stake||BET_COST));
+    return `Ganhou +${ret} (Lucro: ${luc})`;
+  }
+  if(b.status === "perdeu"){
+    return `Perdeu`;
+  }
+  return b.status;
 }
 function renderBets(){
   const tbody = $("#bets-list");
@@ -896,10 +917,84 @@ function renderBets(){
       <td>${name}</td>
       <td>${etapa}</td>
       <td>${b.pick==="A"?"Vitória A": b.pick==="B"?"Vitória B":"Empate"}</td>
-      <td>${b.status||"pendente"}${b.payoutPoints?` · <span class="muted">payout: ${b.payoutPoints}</span>`:""}</td>
+      <td>${formatBetStatus(b)}</td>
     </tr>`;
   }).join("");
 }
+function ensureUndoBar(){
+  if($("#bet-undo-bar")) return $("#bet-undo-bar");
+  const card = $("#apostas .grid-2 .card:nth-child(2)"); // card "Nova Aposta"
+  if(!card) return null;
+  const bar = document.createElement("div");
+  bar.id = "bet-undo-bar";
+  bar.style.cssText = "margin-top:8px;padding:8px;border:1px dashed #999;border-radius:8px;display:none;align-items:center;justify-content:space-between;gap:8px";
+  bar.innerHTML = `
+    <div id="bet-undo-text" class="muted">Aposta registrada.</div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <span id="bet-undo-count" class="badge">5s</span>
+      <button id="bet-undo-btn" class="btn danger small">Desfazer</button>
+    </div>
+  `;
+  card.appendChild(bar);
+  $("#bet-undo-btn")?.addEventListener("click", undoLastBet);
+  return bar;
+}
+function showUndoBar(msg, seconds){
+  const bar = ensureUndoBar();
+  if(!bar) return;
+  $("#bet-undo-text").innerHTML = msg;
+  $("#bet-undo-count").textContent = `${seconds}s`;
+  bar.style.display = "flex";
+}
+function hideUndoBar(){
+  const bar = $("#bet-undo-bar");
+  if(bar) bar.style.display = "none";
+}
+async function undoLastBet(){
+  if(!undoState) return;
+  if(Date.now() > undoState.until) { hideUndoBar(); undoState=null; return; }
+  try{
+    await runTransaction(db, async (tx)=>{
+      const walRef = doc(db,"wallets",state.user.uid);
+      const betRef = doc(db,"bets", undoState.id);
+      const betSnap = await tx.get(betRef);
+      if(!betSnap.exists()) throw new Error("Aposta já removida.");
+      tx.delete(betRef);
+      const walSnap = await tx.get(walRef);
+      const cur = walSnap.exists() && typeof walSnap.data().points==="number" ? walSnap.data().points : 0;
+      tx.set(walRef, { points: cur + (undoState.refund||BET_COST), updatedAt: serverTimestamp() }, { merge:true });
+    });
+    // remove do feed RTDB
+    if(undoState.feedKey){
+      await rtdbRemove(rtdbRef(rtdb, `betsFeed/${undoState.feedKey}`)).catch(()=>{});
+    }
+    alert("Aposta desfeita e pontos devolvidos.");
+  }catch(err){
+    console.error("undo bet:", err);
+    alert(err?.message || "Não foi possível desfazer.");
+  }finally{
+    if(undoState?.timer) clearInterval(undoState.timer);
+    undoState = null;
+    hideUndoBar();
+  }
+}
+function startUndoCountdown(){
+  if(!undoState) return;
+  const tick = ()=> {
+    if(!undoState) return;
+    const left = Math.max(0, Math.ceil((undoState.until - Date.now())/1000));
+    const el = $("#bet-undo-count");
+    if(el) el.textContent = `${left}s`;
+    if(left <= 0){
+      if(undoState?.timer) clearInterval(undoState.timer);
+      undoState = null;
+      hideUndoBar();
+    }
+  };
+  tick();
+  undoState.timer = setInterval(tick, 250);
+}
+
 function bindBetForm(){
   $("#bet-form")?.addEventListener("submit", async (e)=>{
     e.preventDefault(); e.stopPropagation();
@@ -919,20 +1014,28 @@ function bindBetForm(){
       // congela payout baseado no estado atual
       const { probPct, payout } = payoutForPick(match, pick);
 
+      // docId determinístico para 1 aposta/jogo/usuário
+      const betDocId = `bet_${state.user.uid}_${matchId}`;
+      const feedKey = betDocId; // usaremos o mesmo id no RTDB
+
       await runTransaction(db, async (tx)=>{
         const walRef = doc(db,"wallets",state.user.uid);
+        const betRef = doc(db,"bets", betDocId);
+
+        // Já existe aposta neste jogo?
+        const betExisting = await tx.get(betRef);
+        if(betExisting.exists()) throw new Error("Você já apostou nesta partida.");
+
         const walSnap = await tx.get(walRef);
         let curPts = 0;
         if(walSnap.exists() && typeof walSnap.data().points==="number"){
           curPts = walSnap.data().points;
         }else{
-          // se ainda não existir carteira, cria com seed e já debita
           curPts = MIN_SEED_POINTS;
           tx.set(walRef, { points: curPts, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }, { merge:true });
         }
         if(curPts < BET_COST) throw new Error("Saldo insuficiente para apostar.");
 
-        const betRef = doc(collection(db,"bets"));
         tx.set(betRef, {
           uid: state.user.uid, matchId, pick,
           stake: BET_COST,
@@ -943,15 +1046,40 @@ function bindBetForm(){
         tx.update(walRef, { points: curPts - BET_COST, updatedAt: serverTimestamp() });
       });
 
+      // publica no feed RTDB (tempo real)
+      const mapP = Object.fromEntries(state.players.map(p=>[p.id,p.name]));
+      await rtdbSet(rtdbRef(rtdb, `betsFeed/${feedKey}`), {
+        uid: state.user.uid,
+        name: state.user.displayName || state.user.email || "Usuário",
+        matchId,
+        aName: mapP[match.aId]||"?",
+        bName: mapP[match.bId]||"?",
+        pick,
+        payout,
+        stake: BET_COST,
+        ts: Date.now()
+      });
+
+      // Undo em 5s
+      undoState = {
+        id: betDocId,
+        matchId,
+        stake: BET_COST,
+        refund: BET_COST,
+        until: Date.now() + UNDO_WINDOW_MS,
+        timer: null,
+        feedKey
+      };
+      showUndoBar(`Aposta registrada em <b>${mapP[match.aId]||"?"} × ${mapP[match.bId]||"?"}</b>. Você pode <b>desfazer</b> em até 5s.`, 5);
+      startUndoCountdown();
+
       // feedback e ajuste otimista do número exibido
-      alert(`Aposta registrada! (custo ${BET_COST} pts)`);
       const el = $("#wallet-points");
       if(el){
         const nowPts = Math.max(0, (parseInt(el.textContent||"0",10)||0) - BET_COST);
         el.textContent = String(nowPts);
       }
       e.target.reset();
-      // permanece na aba Apostas
     }catch(err){
       console.error("bet add", err);
       alert(err?.message || "Erro ao registrar aposta. Verifique regras/permissões.");
@@ -967,14 +1095,79 @@ async function settleBetsIfFinished(){
     const m = state.matches.find(x=>x.id===b.matchId);
     if(!m || !m.result || m.result==="postponed") continue;
     const ok = (b.pick==="draw" && m.result==="draw") || (b.pick==="A" && m.result==="A") || (b.pick==="B" && m.result==="B");
-    write.update(doc(db,"bets",b.id), { status: ok?"ganhou":"perdeu", settledAt: serverTimestamp() });
+    const credit = ok ? Math.max(2, Number.isFinite(b.payoutPoints)? b.payoutPoints : 2) : 0;
+    write.update(doc(db,"bets",b.id), { status: ok?"ganhou":"perdeu", settledAt: serverTimestamp(), settledPayout: credit });
     if(ok){
-      const credit = Math.max(2, Number.isFinite(b.payoutPoints)? b.payoutPoints : 2);
       write.set(doc(db,"wallets",state.user.uid), { points: state.wallet + credit, updatedAt: serverTimestamp() }, { merge:true });
     }
     changed = true;
   }
   if(changed) await write.commit();
+}
+
+/* ==================== Feed RTDB (Apostas dos outros) ==================== */
+function ensureBetsFeedUI(){
+  if($("#bets-feed")) return;
+  const apSec = $("#apostas");
+  if(!apSec) return;
+  const card = document.createElement("div");
+  card.className = "card";
+  card.id = "bets-feed";
+  card.innerHTML = `
+    <h2>Apostas recentes (tempo real)</h2>
+    <div class="table">
+      <table>
+        <thead>
+          <tr>
+            <th>Usuário</th>
+            <th>Partida</th>
+            <th>Palpite</th>
+            <th>Retorno</th>
+            <th>Quando</th>
+          </tr>
+        </thead>
+        <tbody id="bets-feed-tbody">
+          <tr><td class="muted" colspan="5">Sem apostas no feed.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  `;
+  apSec.appendChild(card);
+}
+function listenBetsFeed(){
+  ensureBetsFeedUI();
+  const tbody = $("#bets-feed-tbody");
+  if(state.listeners.betsFeed) state.listeners.betsFeed();
+  const ref = rtdbRef(rtdb, "betsFeed");
+  const addRow = (key, v)=>{
+    if(!tbody) return;
+    if(v.uid === state.user?.uid) return; // só "outros usuários"
+    // remove placeholder
+    const ph = tbody.querySelector(".muted");
+    if(ph) ph.closest("tr")?.remove();
+    const tr = document.createElement("tr");
+    tr.id = `betfeed-${key}`;
+    const when = new Date(v.ts||Date.now());
+    tr.innerHTML = `
+      <td>${(v.name||"—").replace(/</g,"&lt;")}</td>
+      <td>${(v.aName||"?")} × ${(v.bName||"?")}</td>
+      <td>${v.pick==="A"?"Vitória A": v.pick==="B"?"Vitória B":"Empate"}</td>
+      <td>${v.payout||"-"}</td>
+      <td>${fmt2(when.getHours())}:${fmt2(when.getMinutes())}</td>
+    `;
+    tbody.prepend(tr);
+    state.feedRows[key] = true;
+  };
+  const remRow = (key)=>{
+    $("#betfeed-"+key)?.remove();
+    delete state.feedRows[key];
+    if(Object.keys(state.feedRows).length===0){
+      tbody.innerHTML = `<tr><td class="muted" colspan="5">Sem apostas no feed.</td></tr>`;
+    }
+  };
+
+  state.listeners.betsFeed = onChildAdded(ref, (snap)=> addRow(snap.key, snap.val()));
+  onChildRemoved(ref, (snap)=> remRow(snap.key));
 }
 
 /* ===== Semis + Publicações manuais ===== */
@@ -1018,8 +1211,8 @@ async function generateResultPostsForFinished(){
 
   let created = 0;
   for(const m of state.matches){
-    if(!m.result || m.result==="postponed") continue; // apenas finalizadas
-    if(existing[m.id]) continue; // já tem comunicado
+    if(!m.result || m.result==="postponed") continue;
+    if(existing[m.id]) continue;
     const title = (m.result==="draw")
       ? `Empate entre ${mapP[m.aId]||"?"} e ${mapP[m.bId]||"?"}`
       : `Vitória de ${(m.result==="A"?mapP[m.aId]:mapP[m.bId])||"?"} contra ${(m.result==="A"?mapP[m.bId]:mapP[m.aId])||"?"}`;
@@ -1065,7 +1258,7 @@ async function autoPostponeOverdue(){
   }
 }
 
-/* ===== Injeta botões no Admin: publicação manual ===== */
+/* ===== Ferramentas Admin ===== */
 function ensureAdminToolsButtons(){
   if(!state.admin) return;
   const adminView = $("#admin");
@@ -1092,12 +1285,29 @@ function ensureAdminToolsButtons(){
     btn2.addEventListener("click", generatePostponedPostsForOverdue);
     toolsCard.querySelector("#btn-publish-results")?.after(btn2);
   }
+  // NOVO: apagar todos os comunicados
+  if(!toolsCard.querySelector("#btn-delete-all-posts")){
+    const btn3 = document.createElement("button");
+    btn3.id = "btn-delete-all-posts";
+    btn3.className = "btn danger";
+    btn3.style.marginLeft = "8px";
+    btn3.textContent = "Apagar TODOS os comunicados";
+    btn3.addEventListener("click", async ()=>{
+      if(!confirm("Tem certeza que deseja APAGAR TODOS os comunicados?")) return;
+      const qs = await getDocs(collection(db,"posts"));
+      const b = writeBatch(db);
+      qs.forEach(d=> b.delete(d.ref));
+      await b.commit();
+      alert("Todos os comunicados foram apagados.");
+    });
+    toolsCard.querySelector("#btn-publish-postponed")?.after(btn3);
+  }
 }
 async function generatePostponedPostsForOverdue(){
   let created = 0;
   const now = Date.now();
   for(const m of state.matches){
-    if(m.result) continue; // só pendentes
+    if(m.result) continue;
     if(!m.date) continue;
     const d = parseLocalDate(m.date);
     if(!d || (now - d.getTime()) < ONE_DAY_MS) continue;
@@ -1121,7 +1331,7 @@ async function generatePostponedPostsForOverdue(){
   alert(created ? `Publicados ${created} comunicado(s) de adiamento.` : "Nenhum adiamento pendente.");
 }
 
-/* ==================== Admin: Seed / Players / Semis ==================== */
+/* ==================== Admin/Seed/Players ==================== */
 function bindSeed(){
   $("#seed-btn")?.addEventListener("click", async ()=>{
     if(!confirm("Criar seed de exemplo (jogadores + partidas de grupos)?")) return;
@@ -1237,15 +1447,14 @@ function bindAuthButtons(){
 onAuthStateChanged(auth, async (user)=>{
   state.user = user || null;
   if(user) await ensureAdminBootstrap(user);
-
-  // cria carteira se não existir (NÃO reseta saldo)
   if(user) await ensureWalletInit(user.uid);
 
   listenAdmin(user);
   updateAuthUI();
   fillProfile();
-  listenBets();                 // listener precisa estar sempre ativo
+  listenBets();
   listenWallet(user?.uid||null);
+  listenBetsFeed(); // feed RTDB
 });
 
 /* ==================== Init ==================== */
@@ -1260,7 +1469,7 @@ function init(){
   bindMatchForm();
   bindPlayerForm();
   bindProfileForm();
-  bindBetForm();                 // <<< ESSENCIAL para o botão apostar funcionar
+  bindBetForm(); // botão Apostar
   bindSeed();
   if(!_bootShown){ _bootShown = true; showTab("home"); }
 }
