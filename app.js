@@ -1,4 +1,4 @@
-// app.js — Próximas partidas + prob sem influência de apostas + player de música + edição do torneio
+// app.js — edição ao lado do título, player com seek na barra + capa, Home sem prob., ajustes visuais, botão Voltar no perfil, rankings visíveis a todos
 // Firebase v12 (modules)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-app.js";
 import {
@@ -38,12 +38,6 @@ function fmtLocalDateStr(val){
   const d = val instanceof Date ? val : parseLocalDate(val);
   if(!d) return "—";
   return `${fmt2(d.getDate())}/${fmt2(d.getMonth()+1)}/${d.getFullYear()} ${fmt2(d.getHours())}:${fmt2(d.getMinutes())}`;
-}
-function fmtDateDayTime(val){
-  const d = val instanceof Date ? val : parseLocalDate(val);
-  if(!d) return "—";
-  const dias = ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"];
-  return `${dias[d.getDay()]}, ${fmt2(d.getDate())}/${fmt2(d.getMonth()+1)}/${d.getFullYear()} • ${fmt2(d.getHours())}:${fmt2(d.getMinutes())}`;
 }
 function fmtOnlyDate(val){
   const d = val instanceof Date ? val : parseLocalDate(val);
@@ -97,6 +91,7 @@ const UNDO_WINDOW_MS = 5000;
 
 // Música
 const TRACK_SRC = "./Joy Crookes - Feet Don't Fail Me Now (Lyrics).mp3";
+const TRACK_ART = "./Feet Album.jpg";
 
 /* ==================== Estado ==================== */
 const state = {
@@ -145,18 +140,31 @@ function initTabs(){
 }
 
 /* ==================== Settings / Edição do Torneio ==================== */
+function placeEditionBadge(badge){
+  // tenta colocar ao lado do nome "Champions Chess IFMA"
+  const brand = document.querySelector('#brand, .brand, .brand-title, .site-title, header h1, header .logo, header .brand') ||
+    ([...document.querySelectorAll('header *:not(script):not(style)')].find(el => /Champions Chess IFMA/i.test(el.textContent||"")));
+  if(brand){
+    badge.style.marginLeft = "8px";
+    brand.insertAdjacentElement("afterend", badge);
+    return true;
+  }
+  const navCenter = document.querySelector(".nav-center") || document.querySelector("header");
+  if(navCenter){ navCenter.appendChild(badge); return true; }
+  document.body.appendChild(badge);
+  return false;
+}
 function ensureTournamentBadge(){
   let badge = $("#tournament-badge");
   if(!badge){
-    // tenta colocar na barra central de navegação
-    const navCenter = document.querySelector(".nav-center") || document.querySelector("header") || document.body;
     badge = document.createElement("span");
     badge.id = "tournament-badge";
+    badge.style.cssText = "padding:4px 8px;border-radius:999px;background:#EEF2FF;color:#3730A3;font-weight:700;font-size:12px;display:inline-flex;align-items:center;gap:6px";
     badge.textContent = `Edição #${state.tournamentId}`;
-    badge.style.cssText = "margin-left:8px;padding:4px 8px;border-radius:999px;background:#EEF2FF;color:#3730A3;font-weight:700;font-size:12px;display:inline-flex;align-items:center;gap:6px";
-    navCenter?.appendChild(badge);
+    placeEditionBadge(badge);
   }else{
     badge.textContent = `Edição #${state.tournamentId}`;
+    if(!badge.parentElement) placeEditionBadge(badge);
   }
 }
 function listenSettings(){
@@ -166,6 +174,7 @@ function listenSettings(){
     const cur = snap.exists() ? (Number(snap.data()?.tournamentId)||1) : 1;
     state.tournamentId = cur;
     ensureTournamentBadge();
+    const ed = $("#winners-cur-ed"); if(ed) ed.textContent = String(state.tournamentId);
   }, (_)=>{ ensureTournamentBadge(); });
 }
 
@@ -542,6 +551,10 @@ function buildPlayerProfileHTML(p){
 
   return `
     <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">
+        <button class="btn small" id="btn-back-player">← Voltar</button>
+        <div></div>
+      </div>
       <div class="profile-hero">
         <div class="profile-avatar">${(p.name||"?").slice(0,2).toUpperCase()}</div>
         <div>
@@ -587,6 +600,8 @@ function renderPlayerDetails(playerId){
   $("#btn-open-player-profile")?.addEventListener("click", ()=>{
     $("#player-profile").innerHTML = buildPlayerProfileHTML(p);
     showTab("player-profile");
+    // botão voltar
+    $("#player-profile #btn-back-player")?.addEventListener("click", ()=> showTab("players"));
   });
 }
 function renderTables(){
@@ -620,31 +635,23 @@ function stageLabel(s){
   return s||"—";
 }
 
-/* >>> Probabilidades (apenas V/E/D históricas; sem influência do volume de apostas) */
+/* Probabilidades (apenas histórico V/E/D) — usada só nas telas internas, não na Home */
 function probVED(m){
   const sA = computePlayerStats(m.aId);
   const sB = computePlayerStats(m.bId);
-
-  // Probabilidade de empate baseada no histórico de EMPATES
   const drawA = (sA.draws + 1) / (sA.played + 3);
   const drawB = (sB.draws + 1) / (sB.played + 3);
   let pE = clamp01((drawA + drawB) / 2);
-  pE = Math.max(0.05, Math.min(0.45, pE)); // limites razoáveis para X
-
-  // Força de vitória de cada um (Vitórias vs derrotas; empates removidos da conta)
+  pE = Math.max(0.05, Math.min(0.45, pE));
   const wlA = (sA.wins + 1) / ((sA.wins + sA.losses) + 2);
   const wlB = (sB.wins + 1) / ((sB.wins + sB.losses) + 2);
-
   const rem = Math.max(0, 1 - pE);
   const sum = (wlA + wlB) || 1;
   let pA = rem * (wlA / sum);
   let pB = rem - pA;
-
   const A = Math.round(clampPct(pA*100));
   const E = Math.round(clampPct(pE*100));
-  let D = 100 - A - E; // B
-  if(D < 0){ D = 0; }
-
+  let D = 100 - A - E; if(D < 0){ D = 0; }
   return { A, E, D };
 }
 function payoutForPick(m, pick){
@@ -843,6 +850,19 @@ function loadMatchToForm(id){
 }
 
 /* ==================== Home & Posts ==================== */
+function tweakHomeCards(){
+  // aumenta levemente o "Bem-vindo..." e reduz levemente o "Próximas partidas"
+  const welcome = [...document.querySelectorAll(".card")].find(el => /Bem[- ]vindo ao Champions Chess IFMA/i.test(el.textContent||""));
+  if(welcome){
+    welcome.style.padding = "18px 20px";
+    const h = welcome.querySelector("h2, h3"); if(h){ h.style.fontSize = "22px"; }
+  }
+  const nextCard = [...document.querySelectorAll(".card")].find(el => /Próximas partidas/i.test(el.textContent||""));
+  if(nextCard){
+    nextCard.style.padding = "10px 12px";
+    const h = nextCard.querySelector("h3"); if(h){ h.style.fontSize = "16px"; }
+  }
+}
 function renderHome(){
   const mapP=Object.fromEntries(state.players.map(p=>[p.id,p.name]));
   const pendingScheduled = state.matches.filter(m=> !m.result && !!m.date).slice().sort((a,b)=>parseLocalDate(a.date)-parseLocalDate(b.date));
@@ -856,7 +876,7 @@ function renderHome(){
     for(const m of pendingScheduled){ const d=parseLocalDate(m.date); if(d && d>e){ nextDay=d; break; } }
     if(nextDay){ pick=pendingScheduled.filter(m=>{const d=parseLocalDate(m.date); return d&&isSameDay(d,nextDay);}); }
   }
-  pick=pick.slice(0,6); // mais cheio
+  pick=pick.slice(0,6);
 
   const stageText = (m)=>{
     if(m.stage==="groups") return `F. Grupos${m.group?` ${m.group}`:""}`;
@@ -866,35 +886,30 @@ function renderHome(){
     return m.stage||"—";
   };
 
-  const rows=pick.map(m=>{
-    const p = probVED(m);
-    const line = `V ${p.A}% • E ${p.E}% • D ${p.D}%`;
-    return `
+  // sem coluna de probabilidade
+  const rows=pick.map(m=>`
       <tr>
         <td>${fmtOnlyDate(m.date)}</td>
         <td>${fmtTime(m.date)}</td>
         <td>${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}</td>
         <td>${stageText(m)} ${m.code?`<span class="chip chip--code">${m.code}</span>`:""}</td>
-        <td class="muted">${line}</td>
       </tr>
-    `;
-  }).join("");
+  `).join("");
 
-  const extra = pick.length ? "" : "<tr><td colspan='5'>Sem partidas pendentes hoje/próximo dia.</td></tr>";
+  const extra = pick.length ? "" : "<tr><td colspan='4'>Sem partidas pendentes hoje/próximo dia.</td></tr>";
 
   $("#home-next") && ($("#home-next").innerHTML=`
-    <div class="card">
+    <div class="card" id="home-next-card">
       <div style="display:flex;align-items:center;justify-content:space-between">
         <h3 style="margin:0">Próximas partidas</h3>
         <span class="badge-small" title="Edição atual">Edição #${state.tournamentId}</span>
       </div>
       <div class="table" style="margin-top:8px">
         <table>
-          <thead><tr><th>Dia</th><th>Hora</th><th>Partida</th><th>Etapa/Código</th><th>Prob.</th></tr></thead>
+          <thead><tr><th>Dia</th><th>Hora</th><th>Partida</th><th>Etapa/Código</th></tr></thead>
           <tbody>${rows || extra}</tbody>
         </table>
       </div>
-      <p class="muted" style="margin-top:6px">Probabilidades baseadas no histórico de vitórias/empates/derrotas dos jogadores.</p>
     </div>
   `);
 
@@ -905,6 +920,8 @@ function renderHome(){
       b.onclick=async ()=>{ if(!confirm("Apagar este comunicado?"))return; await deleteDoc(doc(db,"posts",b.dataset.id)); };
     });
   }
+
+  tweakHomeCards();
 }
 function listenPosts(){
   if(state.listeners.posts) state.listeners.posts();
@@ -1247,7 +1264,7 @@ function ensureBetsFeedUI(){
   const card = document.createElement("div");
   card.className = "card"; card.id = "bets-feed";
   card.innerHTML = `
-    <h2>Apostas recentes (tempo real)</h2>
+    <h2>Rankings e Apostas recentes (tempo real)</h2>
     <div class="table">
       <table>
         <thead>
@@ -1341,7 +1358,7 @@ function listenBetsFeed(){
   });
 }
 
-/* ==================== Rankings ==================== */
+/* ==================== Rankings (visível para todos) ==================== */
 function ensureRankingsUI(){
   if($("#rankings-card")) return;
   const apSec = $("#apostas"); if(!apSec) return;
@@ -1360,7 +1377,7 @@ function ensureRankingsUI(){
     <div class="table" style="margin-top:8px">
       <table>
         <thead id="rk-head"></thead>
-        <tbody id="rk-body"></tbody>
+        <tbody id="rk-body"><tr><td class="muted" colspan="6">Carregando ranking...</td></tr></tbody>
       </table>
     </div>
     <p class="muted" id="rk-footnote" style="margin-top:6px"></p>
@@ -1370,17 +1387,25 @@ function ensureRankingsUI(){
 }
 async function rebuildRankings(){
   ensureRankingsUI();
-  const [betsSnap, walletsSnap, profilesSnap] = await Promise.all([
-    getDocs(collection(db,C_BETS)),
-    getDocs(collection(db,C_WALLETS)),
-    getDocs(collection(db,"profiles")).catch(()=>({forEach:()=>{}}))
-  ]);
+  let betsSnap=null, walletsSnap=null, profilesSnap=null;
+  try{
+    [betsSnap, walletsSnap, profilesSnap] = await Promise.all([
+      getDocs(collection(db,C_BETS)),
+      getDocs(collection(db,C_WALLETS)),
+      getDocs(collection(db,"profiles")).catch(()=>({forEach:()=>{}}))
+    ]);
+  }catch(err){
+    console.warn("Sem permissão p/ ler coleções globais de ranking:", err?.message);
+    // Mantém a UI visível com placeholder
+    const body = $("#rk-body"); if(body) body.innerHTML = `<tr><td class="muted" colspan="6">Sem permissão para exibir o ranking global.</td></tr>`;
+    return;
+  }
 
-  const profilesMap = {}; profilesSnap.forEach(d=> profilesMap[d.id] = d.data());
-  const walletsMap = {};  walletsSnap.forEach(d=> walletsMap[d.id] = d.data());
+  const profilesMap = {}; profilesSnap?.forEach?.(d=> profilesMap[d.id] = d.data());
+  const walletsMap = {};  walletsSnap?.forEach?.(d=> walletsMap[d.id] = d.data());
 
   const byUser = {};
-  betsSnap.forEach(d=>{
+  betsSnap?.forEach?.(d=>{
     const b = d.data(); const uid = b.uid; if(!uid) return;
     if(!byUser[uid]) byUser[uid] = { total:0, wins:0 };
     byUser[uid].total++;
@@ -1628,7 +1653,6 @@ function organizeAdminTools(){
   const btnResetAll = mkBtn("btn-reset-all", "Resetar Torneio (TUDO)", "btn danger", async ()=>{
     if(!confirm("Isto vai APAGAR partidas, apostas, comunicados, limpar feed de apostas e resetar saldos. Continuar?")) return;
 
-    // captura edição atual e calcula próxima
     let nextEdition = (state.tournamentId||1) + 1;
     try{
       const st = await getDoc(doc(db,C_SETTINGS,"global"));
@@ -1644,7 +1668,6 @@ function organizeAdminTools(){
     await b.commit();
     try { await rtdbRemove(rtdbRef(rtdb,"betsFeed")); } catch(_){}
 
-    // atualiza edição do torneio
     try{
       await setDoc(doc(db,C_SETTINGS,"global"), { tournamentId: nextEdition, updatedAt: serverTimestamp() }, { merge:true });
       state.tournamentId = nextEdition;
@@ -1820,7 +1843,7 @@ function showCampaignModal(w){
   modal.querySelector("#camp-close")?.addEventListener("click", ()=> modal.remove());
 }
 
-/* ==================== Player de Música ==================== */
+/* ==================== Player de Música (sem botão de avançar; seek na barra; capa do álbum) ==================== */
 function ensureMusicPlayerUI(){
   if(state.audioUI) return state.audioUI;
 
@@ -1828,12 +1851,13 @@ function ensureMusicPlayerUI(){
   const style = document.createElement("style");
   style.textContent = `
     .music-player{position:fixed;right:16px;bottom:16px;background:#111827;color:#F9FAFB;border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.25);padding:10px 12px;display:flex;align-items:center;gap:10px;z-index:9998}
-    .mp-title{font-weight:700;font-size:12px;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis}
+    .mp-art{width:36px;height:36px;border-radius:8px;object-fit:cover}
+    .mp-title{font-weight:700;font-size:12px;white-space:nowrap;max-width:240px;overflow:hidden;text-overflow:ellipsis}
     .mp-btn{appearance:none;border:none;outline:none;background:#1F2937;color:#F9FAFB;border-radius:10px;padding:8px 10px;cursor:pointer;font-weight:700}
     .mp-btn:hover{background:#374151}
-    .mp-bar{height:6px;background:#374151;border-radius:999px;overflow:hidden;flex:1;min-width:120px}
+    .mp-bar{height:8px;background:#374151;border-radius:999px;overflow:hidden;flex:1;min-width:140px;cursor:pointer;position:relative}
     .mp-fill{height:100%;background:#60A5FA;width:0%}
-    .mp-time{font-size:11px;opacity:.8;min-width:70px;text-align:right}
+    .mp-time{font-size:11px;opacity:.85;min-width:70px;text-align:right}
   `;
   document.head.appendChild(style);
 
@@ -1841,10 +1865,10 @@ function ensureMusicPlayerUI(){
   const box = document.createElement("div");
   box.className = "music-player";
   box.innerHTML = `
-    <div class="mp-title">🎵 Joy Crookes - Feet Don't Fail Me Now</div>
+    <img class="mp-art" src="${TRACK_ART}" alt="Album Art">
+    <div class="mp-title">Joy Crookes - Feet Don't Fail Me Now</div>
     <button id="mp-play" class="mp-btn">▶︎</button>
-    <button id="mp-fwd" class="mp-btn">+10s</button>
-    <div class="mp-bar"><div id="mp-fill" class="mp-fill"></div></div>
+    <div class="mp-bar" id="mp-bar"><div id="mp-fill" class="mp-fill"></div></div>
     <div id="mp-time" class="mp-time">0:00 / 0:00</div>
   `;
   document.body.appendChild(box);
@@ -1854,9 +1878,9 @@ function ensureMusicPlayerUI(){
   audio.loop = true;
   state.audio = audio;
 
-  // eventos UI
+  // elementos
   const btnPlay = box.querySelector("#mp-play");
-  const btnFwd  = box.querySelector("#mp-fwd");
+  const bar     = box.querySelector("#mp-bar");
   const fill    = box.querySelector("#mp-fill");
   const timeEl  = box.querySelector("#mp-time");
 
@@ -1864,7 +1888,7 @@ function ensureMusicPlayerUI(){
     if(!Number.isFinite(sec)) return "0:00";
     const m = Math.floor(sec/60), s = Math.floor(sec%60);
     return `${m}:${s<10?"0":""}${s}`;
-    };
+  };
   const sync = ()=>{
     const cur = audio.currentTime||0, dur = audio.duration||0;
     const pct = dur? Math.min(100,(cur/dur)*100):0;
@@ -1885,11 +1909,36 @@ function ensureMusicPlayerUI(){
       console.warn("Autoplay bloqueado:", err?.message);
     }finally{ sync(); }
   });
-  btnFwd.addEventListener("click", ()=>{
-    try{
-      audio.currentTime = Math.min((audio.currentTime||0)+10, (audio.duration||audio.currentTime||0));
-    }catch(_){}
-  });
+
+  // seek por clique/arraste na barra
+  let dragging = false;
+  const posToTime = (clientX)=>{
+    const rect = bar.getBoundingClientRect();
+    const x = Math.max(0, Math.min(rect.width, clientX - rect.left));
+    const frac = rect.width ? x / rect.width : 0;
+    return frac * (audio.duration || 0);
+  };
+  const onDown = (ev)=>{
+    dragging = true;
+    const cx = (ev.touches ? ev.touches[0].clientX : ev.clientX);
+    audio.currentTime = posToTime(cx);
+    sync();
+  };
+  const onMove = (ev)=>{
+    if(!dragging) return;
+    const cx = (ev.touches ? ev.touches[0].clientX : ev.clientX);
+    audio.currentTime = posToTime(cx);
+    ev.preventDefault();
+  };
+  const onUp = ()=>{ dragging = false; };
+
+  bar.addEventListener("mousedown", onDown);
+  window.addEventListener("mousemove", onMove);
+  window.addEventListener("mouseup", onUp);
+
+  bar.addEventListener("touchstart", onDown, { passive:false });
+  window.addEventListener("touchmove", onMove, { passive:false });
+  window.addEventListener("touchend", onUp);
 
   // tenta iniciar após primeira interação
   const tryStart = async ()=>{
@@ -1946,7 +1995,9 @@ function init(){
   bindProfileForm();
   bindBetForm();
 
-  const rk = $("#rk-filter"); if(rk) rk.style.cssText = "padding:8px 10px;border:1px solid #D1D5DB;border-radius:10px;background:#F9FAFB;outline:none";
+  // Rankings visíveis para todos (UI já aparece mesmo sem dados)
+  ensureRankingsUI();
+  rebuildRankings().catch(()=>{ /* placeholder já renderizado */ });
 
   renderWalletCard();
   if(!_bootShown){ _bootShown = true; showTab("home"); }
