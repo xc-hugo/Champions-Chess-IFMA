@@ -7,13 +7,44 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css"/>
+
+  <!-- Estilo do badge de Edição ao lado do título -->
+  <style>
+    .badge-edicao{
+      padding:4px 8px;
+      border-radius:999px;
+      background:#EEF2FF;
+      color:#3730A3;
+      font-weight:700;
+      font-size:12px;
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      margin-left:8px;
+      line-height:1;
+      vertical-align:middle;
+      white-space:nowrap;
+    }
+    /* Ajuste visual para alinhar logo + título + badge */
+    .topbar .nav-left{
+      display:flex;
+      align-items:center;
+      gap:8px;
+      white-space:nowrap;
+    }
+    .topbar .nav-left strong{
+      font-weight:800;
+    }
+  </style>
 </head>
 <body>
   <!-- NAVBAR (TOPBAR) - não é fixa -->
   <nav class="tabs topbar">
     <div class="nav-left">
       <img src="logo.png" alt="Champions Chess IFMA" class="logo logo--small">
-      <strong>Champions Chess IFMA</strong>
+      <strong id="brand">Champions Chess IFMA</strong>
+      <!-- Badge fixo ao lado do nome. O app.js atualiza o texto (edição) dinamicamente -->
+      <span id="tournament-badge" class="badge-edicao">Edição #1</span>
     </div>
 
     <div class="nav-center">
@@ -416,4 +447,3 @@
   <script type="module" src="app.js"></script>
 </body>
 </html>
-
