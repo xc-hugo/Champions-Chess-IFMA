@@ -1,4 +1,7 @@
-// app.js — edição ao lado do título, player com seek na barra + capa, Home sem prob., ajustes visuais, botão Voltar no perfil, rankings visíveis a todos
+// app.js — edição ao lado do título, player com seek + capa + minimizar, Home sem prob., ajustes visuais,
+// botão Voltar no perfil, rankings visíveis a todos, chip "Perfil", bônus semanal, correção confronto direto,
+// e reconciliação de apostas quando resultado muda.
+//
 // Firebase v12 (modules)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-app.js";
 import {
@@ -87,6 +90,7 @@ const C_SETTINGS= "settings";
 const BET_COST   = 2;       // CCIP debitados por aposta
 const MIN_SEED_POINTS = 6;  // saldo inicial (CCIP)
 const ONE_DAY_MS = 24*60*60*1000;
+const ONE_WEEK_MS = 7*24*60*60*1000;
 const UNDO_WINDOW_MS = 5000;
 
 // Música
@@ -272,7 +276,9 @@ function updateAuthUI(){
 
   if(state.user){
     chip?.classList.remove("hidden");
-    email && (email.textContent = state.user.displayName || state.user.email);
+    // Mostrar "Perfil" no chip, mantendo o nome real no title
+    if(chip) chip.title = `Abrir perfil (${state.user.displayName || state.user.email})`;
+    email && (email.textContent = "Perfil");
     btnLogin?.classList.add("hidden");
     btnOut?.classList.remove("hidden");
     if(state.admin){ adminBadge?.classList.remove("hidden"); tabAdmin?.classList.remove("hidden"); }
@@ -366,18 +372,51 @@ async function ensureWalletInit(uid){
     await runTransaction(db, async (tx)=>{
       const snap = await tx.get(refWal);
       if(!snap.exists()){
-        tx.set(refWal, { points: MIN_SEED_POINTS, email: auth.currentUser?.email||null, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+        tx.set(refWal, { points: MIN_SEED_POINTS, email: auth.currentUser?.email||null, createdAt: serverTimestamp(), updatedAt: serverTimestamp(), lastWeeklyAt: serverTimestamp() });
       }else if(!snap.data()?.email){
         tx.set(refWal, { email: auth.currentUser?.email||null, updatedAt: serverTimestamp() }, { merge:true });
+      }else if(!snap.data()?.lastWeeklyAt){
+        tx.set(refWal, { lastWeeklyAt: serverTimestamp() }, { merge:true });
       }
     });
   }catch(e){
     try{
       const snap = await getDoc(refWal);
       if(!snap.exists()){
-        await setDoc(refWal, { points: MIN_SEED_POINTS, email: auth.currentUser?.email||null, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+        await setDoc(refWal, { points: MIN_SEED_POINTS, email: auth.currentUser?.email||null, createdAt: serverTimestamp(), updatedAt: serverTimestamp(), lastWeeklyAt: serverTimestamp() });
+      }else if(!snap.data()?.lastWeeklyAt){
+        await setDoc(refWal, { lastWeeklyAt: serverTimestamp() }, { merge:true });
       }
     }catch(err){ console.error("ensureWalletInit fallback:", err); }
+  }
+}
+
+/* ===== Bônus semanal (6 CCIP/semana) ===== */
+async function grantWeeklyBonus(uid){
+  if(!uid) return;
+  try{
+    const refWal = doc(db, C_WALLETS, uid);
+    await runTransaction(db, async (tx)=>{
+      const snap = await tx.get(refWal);
+      if(!snap.exists()) return;
+      const d = snap.data();
+      const last = d.lastWeeklyAt?.toMillis ? d.lastWeeklyAt.toMillis() :
+                   d.lastWeeklyAt?.seconds ? d.lastWeeklyAt.seconds*1000 :
+                   0;
+      const now = Date.now();
+      if(!last){
+        tx.set(refWal, { lastWeeklyAt: serverTimestamp() }, { merge:true });
+        return;
+      }
+      const diff = now - last;
+      const weeks = Math.floor(diff / ONE_WEEK_MS);
+      if(weeks >= 1){
+        const toGive = weeks * MIN_SEED_POINTS; // 6 por semana
+        tx.set(refWal, { points: increment(toGive), lastWeeklyAt: serverTimestamp(), updatedAt: serverTimestamp() }, { merge:true });
+      }
+    });
+  }catch(err){
+    console.warn("grantWeeklyBonus:", err?.message);
   }
 }
 
@@ -527,6 +566,31 @@ function computePlayerStats(playerId){
   }
   return { points, wins:w, draws:d, losses:l, played };
 }
+
+/* ===== Confronto direto como primeiro desempate entre empatados por pontos ===== */
+function headToHeadCompare(aId, bId, group){
+  const m = state.matches.find(x =>
+    x.stage==="groups" && x.group===group &&
+    ((x.aId===aId && x.bId===bId) || (x.aId===bId && x.bId===aId))
+  );
+  if(!m || !m.result || m.result==="draw" || m.result==="postponed") return 0; // sem desempate
+  if(m.result==="A"){
+    // A venceu: checar se o aId do match é 'aId'
+    return (m.aId===aId) ? -1 : 1; // -1 => a antes de b
+  }
+  if(m.result==="B"){
+    return (m.bId===aId) ? -1 : 1;
+  }
+  return 0;
+}
+function compareStandings(a, b, group){
+  if(b.points !== a.points) return b.points - a.points;
+  const h2h = headToHeadCompare(a.id, b.id, group);
+  if(h2h !== 0) return h2h;
+  // fallback: mais vitórias, depois nome
+  return (b.wins - a.wins) || a.name.localeCompare(b.name);
+}
+
 function buildPlayerProfileHTML(p){
   const stats = computePlayerStats(p.id);
   const hist = state.matches
@@ -609,7 +673,7 @@ function renderTables(){
     const rows = state.players.filter(p=>p.group===g).map(p=>{
       const s = computePlayerStats(p.id);
       return { id:p.id, name:p.name, ...s };
-    }).sort((a,b)=> (b.points-a.points) || (b.wins-a.wins) || a.name.localeCompare(b.name));
+    }).sort((a,b)=> compareStandings(a,b,g));
     const html = `
       <div class="table">
         <table>
@@ -698,7 +762,9 @@ function listenMatches(){
     if(state.admin) await autoCreateSemisIfDone();
     if(state.admin) await ensureChampionRecorded();
 
-    settleBetsIfFinished();
+    // Reconcilia apostas (ganhos/perdas) caso resultados tenham mudado
+    await reconcileMyBetsWithMatches();
+
     updateFeedStatuses();
     rebuildRankings();
   });
@@ -851,7 +917,7 @@ function loadMatchToForm(id){
 
 /* ==================== Home & Posts ==================== */
 function tweakHomeCards(){
-  // aumenta levemente o "Bem-vindo..." e reduz levemente o "Próximas partidas"
+  // reduz levemente "Próximas partidas", aumenta levemente "Bem-vindo..."
   const welcome = [...document.querySelectorAll(".card")].find(el => /Bem[- ]vindo ao Champions Chess IFMA/i.test(el.textContent||""));
   if(welcome){
     welcome.style.padding = "18px 20px";
@@ -1005,7 +1071,7 @@ function listenBets(){
   if(!state.user){ state.bets=[]; renderBetsTable(); renderBetsSelect(); renderWalletCard(); return; }
   state.listeners.bets = onSnapshot(
     query(collection(db,C_BETS), where("uid","==",state.user.uid)),
-    (qs)=>{
+    async (qs)=>{
       const list = qs.docs.map(d=>{
         const data = d.data();
         const ts = data.createdAt?.toMillis ? data.createdAt.toMillis()
@@ -1014,6 +1080,8 @@ function listenBets(){
       }).sort((a,b)=> b.__ts - a.__ts);
       state.bets = list;
       renderBetsTable(); renderBetsSelect(); renderWalletCard(); renderMatches();
+      // Também reconcilia caso resultados tenham mudado depois do snapshot de apostas
+      await reconcileMyBetsWithMatches();
     },
     (err)=> console.error("listenBets error:", err)
   );
@@ -1238,23 +1306,51 @@ function bindBetForm(){
     }
   });
 }
-async function settleBetsIfFinished(){
-  if(!state.user) return;
-  const write = writeBatch(db);
-  let changed = false;
-  for(const b of state.bets){
-    if(b.status && b.status!=="pendente") continue;
-    const m = state.matches.find(x=>x.id===b.matchId);
-    if(!m || !m.result || m.result==="postponed") continue;
-    const ok = (b.pick==="draw" && m.result==="draw") || (b.pick==="A" && m.result==="A") || (b.pick==="B" && m.result==="B");
-    const credit = ok ? Math.max(2, Number.isFinite(b.payoutPoints)? b.payoutPoints : 2) : 0;
-    write.update(doc(db,C_BETS,b.id), { status: ok?"ganhou":"perdeu", settledAt: serverTimestamp(), settledPayout: credit });
-    if(ok){
-      write.set(doc(db,C_WALLETS,state.user.uid), { points: increment(credit), updatedAt: serverTimestamp() }, { merge:true });
-    }
-    changed = true;
+
+/* ===== Reconciliação de apostas quando o resultado muda ===== */
+function expectedSettlement(b){
+  const m = state.matches.find(x=>x.id===b.matchId);
+  if(!m || !m.result || m.result==="postponed"){
+    return { status: "pendente", credit: 0 };
   }
-  if(changed) await write.commit();
+  const win = (b.pick==="draw" && m.result==="draw") || (b.pick==="A" && m.result==="A") || (b.pick==="B" && m.result==="B");
+  const credit = win ? Math.max(2, Number.isFinite(b.payoutPoints)? b.payoutPoints : 2) : 0;
+  return { status: win ? "ganhou" : "perdeu", credit };
+}
+async function reconcileMyBetsWithMatches(){
+  if(!state.user || !state.bets.length) return;
+  let totalDelta = 0;
+  const batch = writeBatch(db);
+  let changed = false;
+
+  for(const b of state.bets){
+    const exp = expectedSettlement(b);
+    const curCredit = (b.status==="ganhou") ? (Number.isFinite(b.settledPayout)? b.settledPayout : (b.payoutPoints||0)) : 0;
+    const newCredit = exp.credit;
+    // Se status ou crédito mudou, atualiza doc e acumula delta
+    const statusChanged = (b.status || "pendente") !== exp.status;
+    const creditChanged = curCredit !== newCredit;
+
+    if(statusChanged || creditChanged){
+      changed = true;
+      totalDelta += (newCredit - curCredit);
+      const betRef = doc(db, C_BETS, b.id);
+      if(exp.status === "ganhou"){
+        batch.update(betRef, { status: "ganhou", settledAt: serverTimestamp(), settledPayout: newCredit });
+      }else if(exp.status === "perdeu"){
+        batch.update(betRef, { status: "perdeu", settledAt: serverTimestamp(), settledPayout: 0 });
+      }else{ // pendente
+        batch.update(betRef, { status: "pendente", settledAt: null, settledPayout: null });
+      }
+    }
+  }
+
+  if(changed){
+    if(totalDelta !== 0){
+      batch.set(doc(db, C_WALLETS, state.user.uid), { points: increment(totalDelta), updatedAt: serverTimestamp() }, { merge:true });
+    }
+    await batch.commit();
+  }
 }
 
 /* ==================== Feed RTDB (Apostas Recentes) ==================== */
@@ -1396,7 +1492,6 @@ async function rebuildRankings(){
     ]);
   }catch(err){
     console.warn("Sem permissão p/ ler coleções globais de ranking:", err?.message);
-    // Mantém a UI visível com placeholder
     const body = $("#rk-body"); if(body) body.innerHTML = `<tr><td class="muted" colspan="6">Sem permissão para exibir o ranking global.</td></tr>`;
     return;
   }
@@ -1512,7 +1607,7 @@ async function autoCreateSemisIfDone(){
     return state.players.filter(p=>p.group===g).map(p=>{
       const s = computePlayerStats(p.id);
       return { id:p.id, name:p.name, ...s };
-    }).sort((a,b)=> (b.points-a.points) || (b.wins-a.wins) || a.name.localeCompare(b.name))
+    }).sort((a,b)=> compareStandings(a,b,g))
       .slice(0,2).map(x=>x.id);
   };
   const [a1,a2]=rank("A"); const [b1,b2]=rank("B");
@@ -1843,14 +1938,16 @@ function showCampaignModal(w){
   modal.querySelector("#camp-close")?.addEventListener("click", ()=> modal.remove());
 }
 
-/* ==================== Player de Música (sem botão de avançar; seek na barra; capa do álbum) ==================== */
+/* ==================== Player de Música (com minimizar/expandir) ==================== */
 function ensureMusicPlayerUI(){
   if(state.audioUI) return state.audioUI;
 
-  // estilo
+  // estilo (inclui compact da navbar)
   const style = document.createElement("style");
   style.textContent = `
+    /* Player */
     .music-player{position:fixed;right:16px;bottom:16px;background:#111827;color:#F9FAFB;border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.25);padding:10px 12px;display:flex;align-items:center;gap:10px;z-index:9998}
+    .music-player.min{padding:8px 10px}
     .mp-art{width:36px;height:36px;border-radius:8px;object-fit:cover}
     .mp-title{font-weight:700;font-size:12px;white-space:nowrap;max-width:240px;overflow:hidden;text-overflow:ellipsis}
     .mp-btn{appearance:none;border:none;outline:none;background:#1F2937;color:#F9FAFB;border-radius:10px;padding:8px 10px;cursor:pointer;font-weight:700}
@@ -1858,6 +1955,17 @@ function ensureMusicPlayerUI(){
     .mp-bar{height:8px;background:#374151;border-radius:999px;overflow:hidden;flex:1;min-width:140px;cursor:pointer;position:relative}
     .mp-fill{height:100%;background:#60A5FA;width:0%}
     .mp-time{font-size:11px;opacity:.85;min-width:70px;text-align:right}
+    .mp-minbtn{font-size:12px;padding:6px 8px}
+    .music-player.min .mp-title,
+    .music-player.min .mp-bar,
+    .music-player.min .mp-time{display:none}
+
+    /* NavBar compacta */
+    .topbar{padding:6px 8px}
+    .topbar .tab{font-size:12px;padding:6px 8px;margin:0 2px}
+    .topbar .nav-left strong{font-size:14px}
+    .topbar .nav-right .btn{font-size:12px;padding:6px 8px}
+    .topbar .chip{font-size:12px;padding:4px 8px}
   `;
   document.head.appendChild(style);
 
@@ -1870,6 +1978,7 @@ function ensureMusicPlayerUI(){
     <button id="mp-play" class="mp-btn">▶︎</button>
     <div class="mp-bar" id="mp-bar"><div id="mp-fill" class="mp-fill"></div></div>
     <div id="mp-time" class="mp-time">0:00 / 0:00</div>
+    <button id="mp-min" class="mp-btn mp-minbtn" title="Minimizar">—</button>
   `;
   document.body.appendChild(box);
 
@@ -1883,6 +1992,7 @@ function ensureMusicPlayerUI(){
   const bar     = box.querySelector("#mp-bar");
   const fill    = box.querySelector("#mp-fill");
   const timeEl  = box.querySelector("#mp-time");
+  const btnMin  = box.querySelector("#mp-min");
 
   const fmt = (sec)=> {
     if(!Number.isFinite(sec)) return "0:00";
@@ -1908,6 +2018,13 @@ function ensureMusicPlayerUI(){
     }catch(err){
       console.warn("Autoplay bloqueado:", err?.message);
     }finally{ sync(); }
+  });
+
+  // Minimizar/expandir (áudio continua independente do estado visual)
+  btnMin.addEventListener("click", ()=>{
+    const min = box.classList.toggle("min");
+    btnMin.textContent = min ? "▣" : "—";
+    btnMin.title = min ? "Expandir" : "Minimizar";
   });
 
   // seek por clique/arraste na barra
@@ -1953,6 +2070,22 @@ function ensureMusicPlayerUI(){
   return box;
 }
 
+/* ==================== NavBar compact (garantia) ==================== */
+function applyNavbarCompactStyle(){
+  // (o CSS já foi injetado junto ao player, mas chamamos aqui por segurança caso o player ainda não exista)
+  if(document.querySelector('#nav-compact-style')) return;
+  const st = document.createElement("style");
+  st.id = "nav-compact-style";
+  st.textContent = `
+    .topbar{padding:6px 8px}
+    .topbar .tab{font-size:12px;padding:6px 8px;margin:0 2px}
+    .topbar .nav-left strong{font-size:14px}
+    .topbar .nav-right .btn{font-size:12px;padding:6px 8px}
+    .topbar .chip{font-size:12px;padding:4px 8px}
+  `;
+  document.head.appendChild(st);
+}
+
 /* ==================== Auth listeners ==================== */
 function bindAuthButtons(){
   $("#btn-open-login")?.addEventListener("click", loginGoogle);
@@ -1965,6 +2098,7 @@ onAuthStateChanged(auth, async (user)=>{
   listenAdmin(user);
   if(user){
     await ensureWalletInit(user.uid);
+    await grantWeeklyBonus(user.uid);        // bônus semanal no login
     await loadProfileIntoState(user.uid);
   }
   updateAuthUI();
@@ -1985,6 +2119,7 @@ function init(){
   listenSettings();          // Edição do torneio
   ensureTournamentBadge();   // badge inicial
   ensureMusicPlayerUI();     // player de música
+  applyNavbarCompactStyle(); // navbar mais compacta
 
   listenPlayers();
   listenMatches();
@@ -2000,6 +2135,10 @@ function init(){
   rebuildRankings().catch(()=>{ /* placeholder já renderizado */ });
 
   renderWalletCard();
+
+  // Bônus semanal: checa periodicamente (leve)
+  setInterval(()=>{ if(state.user) grantWeeklyBonus(state.user.uid); }, 6*60*60*1000); // a cada 6h
+
   if(!_bootShown){ _bootShown = true; showTab("home"); }
 }
 init();
