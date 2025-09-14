@@ -1,4 +1,4 @@
-// app.js — corrige desconto duplo: só -2 no saldo (wallets.points) e UI atualizada apenas pelo snapshot
+// app.js — Próximas partidas + prob sem influência de apostas + player de música + edição do torneio
 // Firebase v12 (modules)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-app.js";
 import {
@@ -39,6 +39,18 @@ function fmtLocalDateStr(val){
   if(!d) return "—";
   return `${fmt2(d.getDate())}/${fmt2(d.getMonth()+1)}/${d.getFullYear()} ${fmt2(d.getHours())}:${fmt2(d.getMinutes())}`;
 }
+function fmtDateDayTime(val){
+  const d = val instanceof Date ? val : parseLocalDate(val);
+  if(!d) return "—";
+  const dias = ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"];
+  return `${dias[d.getDay()]}, ${fmt2(d.getDate())}/${fmt2(d.getMonth()+1)}/${d.getFullYear()} • ${fmt2(d.getHours())}:${fmt2(d.getMinutes())}`;
+}
+function fmtOnlyDate(val){
+  const d = val instanceof Date ? val : parseLocalDate(val);
+  if(!d) return "—";
+  const dias = ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"];
+  return `${dias[d.getDay()]} ${fmt2(d.getDate())}/${fmt2(d.getMonth()+1)}`;
+}
 function fmtTime(val){
   const d = parseLocalDate(val);
   if(!d) return "—";
@@ -75,12 +87,16 @@ const rtdb = getDatabase(app);
 // Coleções
 const C_WALLETS = "wallets";
 const C_BETS    = "bets";
+const C_SETTINGS= "settings";
 
 // Apostas / sistema
 const BET_COST   = 2;       // CCIP debitados por aposta
 const MIN_SEED_POINTS = 6;  // saldo inicial (CCIP)
 const ONE_DAY_MS = 24*60*60*1000;
 const UNDO_WINDOW_MS = 5000;
+
+// Música
+const TRACK_SRC = "./Joy Crookes - Feet Don't Fail Me Now (Lyrics).mp3";
 
 /* ==================== Estado ==================== */
 const state = {
@@ -92,12 +108,17 @@ const state = {
   bets: [],
   wallet: 0, // CCIP (points)
   listeners: {
-    players:null, matches:null, posts:null, bets:null, wallet:null, chat:null, admin:null, betsFeed:null,
+    players:null, matches:null, posts:null, bets:null, wallet:null, chat:null, admin:null, betsFeed:null, settings:null,
   },
   feedRowsData: {},
   rankings: { bestByWins: [], mostPoints: [], mostBets: [], profilesMap: {}, walletsMap: {} },
   tournamentId: 1,
   winners: [],
+
+  // Música
+  audio: null,
+  audioUI: null,
+  audioStarted: false,
 };
 
 let _bootShown = false;
@@ -121,6 +142,31 @@ function initTabs(){
     });
   });
   $("#user-chip")?.addEventListener("click", ()=> showTab("perfil"));
+}
+
+/* ==================== Settings / Edição do Torneio ==================== */
+function ensureTournamentBadge(){
+  let badge = $("#tournament-badge");
+  if(!badge){
+    // tenta colocar na barra central de navegação
+    const navCenter = document.querySelector(".nav-center") || document.querySelector("header") || document.body;
+    badge = document.createElement("span");
+    badge.id = "tournament-badge";
+    badge.textContent = `Edição #${state.tournamentId}`;
+    badge.style.cssText = "margin-left:8px;padding:4px 8px;border-radius:999px;background:#EEF2FF;color:#3730A3;font-weight:700;font-size:12px;display:inline-flex;align-items:center;gap:6px";
+    navCenter?.appendChild(badge);
+  }else{
+    badge.textContent = `Edição #${state.tournamentId}`;
+  }
+}
+function listenSettings(){
+  if(state.listeners.settings) state.listeners.settings();
+  const ref = doc(db, C_SETTINGS, "global");
+  state.listeners.settings = onSnapshot(ref, (snap)=>{
+    const cur = snap.exists() ? (Number(snap.data()?.tournamentId)||1) : 1;
+    state.tournamentId = cur;
+    ensureTournamentBadge();
+  }, (_)=>{ ensureTournamentBadge(); });
 }
 
 /* ==================== Auth & Admin ==================== */
@@ -573,29 +619,33 @@ function stageLabel(s){
   if(s==="groups") return "F. Grupos";
   return s||"—";
 }
+
+/* >>> Probabilidades (apenas V/E/D históricas; sem influência do volume de apostas) */
 function probVED(m){
   const sA = computePlayerStats(m.aId);
   const sB = computePlayerStats(m.bId);
-  const wpA = (sA.wins + 1) / ((sA.wins + sA.losses) + 2);
-  const wpB = (sB.wins + 1) / ((sB.wins + sB.losses) + 2);
-  let baseA = wpA / (wpA + wpB);
-  let baseB = 1 - baseA;
-  let baseE = 0.15;
 
-  const bets = state.bets.filter(b=> b.matchId===m.id);
-  const tot = bets.length || 1;
-  const shareA = bets.filter(b=>b.pick==="A").length / tot;
-  const shareB = bets.filter(b=>b.pick==="B").length / tot;
-  const shareE = bets.filter(b=>b.pick==="draw").length / tot;
+  // Probabilidade de empate baseada no histórico de EMPATES
+  const drawA = (sA.draws + 1) / (sA.played + 3);
+  const drawB = (sB.draws + 1) / (sB.played + 3);
+  let pE = clamp01((drawA + drawB) / 2);
+  pE = Math.max(0.05, Math.min(0.45, pE)); // limites razoáveis para X
 
-  let pA = clamp01(0.55*baseA + 0.45*shareA);
-  let pB = clamp01(0.55*baseB + 0.45*shareB);
-  let pE = clamp01(0.30*baseE + 0.70*shareE*0.7);
+  // Força de vitória de cada um (Vitórias vs derrotas; empates removidos da conta)
+  const wlA = (sA.wins + 1) / ((sA.wins + sA.losses) + 2);
+  const wlB = (sB.wins + 1) / ((sB.wins + sB.losses) + 2);
 
-  const s = pA+pB+pE || 1;
-  pA/=s; pB/=s; pE/=s;
+  const rem = Math.max(0, 1 - pE);
+  const sum = (wlA + wlB) || 1;
+  let pA = rem * (wlA / sum);
+  let pB = rem - pA;
 
-  return { A: Math.round(clampPct(pA*100)), E: Math.round(clampPct(pE*100)), D: Math.round(clampPct(pB*100)) };
+  const A = Math.round(clampPct(pA*100));
+  const E = Math.round(clampPct(pE*100));
+  let D = 100 - A - E; // B
+  if(D < 0){ D = 0; }
+
+  return { A, E, D };
 }
 function payoutForPick(m, pick){
   const p = probVED(m);
@@ -806,7 +856,7 @@ function renderHome(){
     for(const m of pendingScheduled){ const d=parseLocalDate(m.date); if(d && d>e){ nextDay=d; break; } }
     if(nextDay){ pick=pendingScheduled.filter(m=>{const d=parseLocalDate(m.date); return d&&isSameDay(d,nextDay);}); }
   }
-  pick=pick.slice(0,4);
+  pick=pick.slice(0,6); // mais cheio
 
   const stageText = (m)=>{
     if(m.stage==="groups") return `F. Grupos${m.group?` ${m.group}`:""}`;
@@ -816,19 +866,36 @@ function renderHome(){
     return m.stage||"—";
   };
 
-  const rows=pick.map(m=>`
-    <tr>
-      <td>${stageText(m)}</td>
-      <td>${fmtTime(m.date)}</td>
-      <td>${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}</td>
-    </tr>
-  `).join("");
+  const rows=pick.map(m=>{
+    const p = probVED(m);
+    const line = `V ${p.A}% • E ${p.E}% • D ${p.D}%`;
+    return `
+      <tr>
+        <td>${fmtOnlyDate(m.date)}</td>
+        <td>${fmtTime(m.date)}</td>
+        <td>${mapP[m.aId]||"?"} × ${mapP[m.bId]||"?"}</td>
+        <td>${stageText(m)} ${m.code?`<span class="chip chip--code">${m.code}</span>`:""}</td>
+        <td class="muted">${line}</td>
+      </tr>
+    `;
+  }).join("");
+
+  const extra = pick.length ? "" : "<tr><td colspan='5'>Sem partidas pendentes hoje/próximo dia.</td></tr>";
 
   $("#home-next") && ($("#home-next").innerHTML=`
-    <table>
-      <thead><tr><th>Etapa</th><th>Hora</th><th>Partida</th></tr></thead>
-      <tbody>${rows||"<tr><td colspan='3'>Sem partidas pendentes hoje/próximo dia.</td></tr>"}</tbody>
-    </table>
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <h3 style="margin:0">Próximas partidas</h3>
+        <span class="badge-small" title="Edição atual">Edição #${state.tournamentId}</span>
+      </div>
+      <div class="table" style="margin-top:8px">
+        <table>
+          <thead><tr><th>Dia</th><th>Hora</th><th>Partida</th><th>Etapa/Código</th><th>Prob.</th></tr></thead>
+          <tbody>${rows || extra}</tbody>
+        </table>
+      </div>
+      <p class="muted" style="margin-top:6px">Probabilidades baseadas no histórico de vitórias/empates/derrotas dos jogadores.</p>
+    </div>
   `);
 
   const posts = state.posts.slice(0,3).map(p=>renderPostItem(p)).join("");
@@ -1143,9 +1210,6 @@ function bindBetForm(){
       undoState = { id: betDocId, matchId, stake: BET_COST, refund: BET_COST, until: Date.now() + UNDO_WINDOW_MS, timer: null, feedKey };
       showUndoBar(`Aposta registrada em <b>${mapP[match.aId]||"?"} × ${mapP[match.bId]||"?"}</b>. Você pode <b>desfazer</b> em até 5s.`);
       startUndoCountdown();
-
-      // 🔧 NÃO altere saldo manualmente; listener fará isso
-      // (Removido: bloco que fazia parseInt(#wallet-ccip) - BET_COST)
 
       updateBetFormEnabled();
       e.target.reset(); updateOddsHint();
@@ -1563,6 +1627,15 @@ function organizeAdminTools(){
   });
   const btnResetAll = mkBtn("btn-reset-all", "Resetar Torneio (TUDO)", "btn danger", async ()=>{
     if(!confirm("Isto vai APAGAR partidas, apostas, comunicados, limpar feed de apostas e resetar saldos. Continuar?")) return;
+
+    // captura edição atual e calcula próxima
+    let nextEdition = (state.tournamentId||1) + 1;
+    try{
+      const st = await getDoc(doc(db,C_SETTINGS,"global"));
+      const cur = st.exists() ? Number(st.data()?.tournamentId||state.tournamentId||1) : (state.tournamentId||1);
+      nextEdition = cur + 1;
+    }catch(_){}
+
     const b = writeBatch(db);
     (await getDocs(collection(db,"matches"))).forEach(d=> b.delete(d.ref));
     (await getDocs(collection(db,"posts"))).forEach(d=> b.delete(d.ref));
@@ -1570,8 +1643,19 @@ function organizeAdminTools(){
     (await getDocs(collection(db,C_WALLETS))).forEach(d=> b.set(d.ref, { points: MIN_SEED_POINTS, updatedAt: serverTimestamp() }, { merge:true }));
     await b.commit();
     try { await rtdbRemove(rtdbRef(rtdb,"betsFeed")); } catch(_){}
-    alert("Torneio resetado.");
+
+    // atualiza edição do torneio
+    try{
+      await setDoc(doc(db,C_SETTINGS,"global"), { tournamentId: nextEdition, updatedAt: serverTimestamp() }, { merge:true });
+      state.tournamentId = nextEdition;
+      ensureTournamentBadge();
+    }catch(err){
+      console.warn("Falha ao salvar edição do torneio:", err?.message);
+    }
+
+    alert(`Torneio resetado. Nova edição: #${nextEdition}.`);
     rebuildRankings();
+    renderHome();
   });
 
   [btnPublishResults, btnPublishPostponed, btnDeletePosts, btnResetWallets, btnResetBets, btnResetAll]
@@ -1626,18 +1710,13 @@ function ensureWinnersTab(){
     <div class="card">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
         <h2 style="margin:0">Campeões</h2>
-        <div>
-          <select id="winners-filter" style="padding:8px 10px;border:1px solid #D1D5DB;border-radius:10px;background:#F9FAFB;outline:none">
-            <option value="byTournament">Por Torneio</option>
-            <option value="rankChampions">Ranking de Campeões</option>
-          </select>
-        </div>
+        <span class="badge-small">Edição atual: #<span id="winners-cur-ed">${state.tournamentId}</span></span>
       </div>
       <div id="winners-views" style="margin-top:10px">
         <div id="winners-by-tournament">
           <div class="table">
             <table>
-              <thead><tr><th>Torneio</th><th>Campeão</th><th>Vice</th><th>Ver campanha</th></tr></thead>
+              <thead><tr><th>Edição</th><th>Campeão</th><th>Vice</th><th>Ver campanha</th></tr></thead>
               <tbody id="winners-body"><tr><td class="muted" colspan="4">Sem registros.</td></tr></tbody>
             </table>
           </div>
@@ -1649,6 +1728,12 @@ function ensureWinnersTab(){
               <tbody id="winners-rank-body"><tr><td class="muted" colspan="2">Sem registros.</td></tr></tbody>
             </table>
           </div>
+        </div>
+        <div style="margin-top:8px">
+          <select id="winners-filter" style="padding:8px 10px;border:1px solid #D1D5DB;border-radius:10px;background:#F9FAFB;outline:none">
+            <option value="byTournament">Por Torneio</option>
+            <option value="rankChampions">Ranking de Campeões</option>
+          </select>
         </div>
       </div>
     </div>
@@ -1666,6 +1751,7 @@ function listenWinners(){
     onSnapshot(query(collection(db,"winners"), orderBy("tournament","desc")), (qs)=>{
       state.winners = qs.docs.map(d=>({id:d.id, ...d.data()}));
       renderWinners(); renderWinnersRank();
+      const ed = $("#winners-cur-ed"); if(ed) ed.textContent = String(state.tournamentId);
     }, (_e)=>{ /* ignorar erros */ });
   }catch(_){}
 }
@@ -1719,7 +1805,7 @@ function showCampaignModal(w){
   modal.innerHTML = `
     <div style="background:#fff;max-width:780px;width:100%;border-radius:12px;padding:12px">
       <div style="display:flex;align-items:center;justify-content:space-between">
-        <h3 style="margin:0">Campanha do Campeão — Torneio #${w.tournament}</h3>
+        <h3 style="margin:0">Campanha do Campeão — Edição #${w.tournament}</h3>
         <button id="camp-close" class="btn ghost small">Fechar</button>
       </div>
       <div class="table" style="margin-top:8px;max-height:60vh;overflow:auto">
@@ -1732,6 +1818,90 @@ function showCampaignModal(w){
   `;
   document.body.appendChild(modal);
   modal.querySelector("#camp-close")?.addEventListener("click", ()=> modal.remove());
+}
+
+/* ==================== Player de Música ==================== */
+function ensureMusicPlayerUI(){
+  if(state.audioUI) return state.audioUI;
+
+  // estilo
+  const style = document.createElement("style");
+  style.textContent = `
+    .music-player{position:fixed;right:16px;bottom:16px;background:#111827;color:#F9FAFB;border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.25);padding:10px 12px;display:flex;align-items:center;gap:10px;z-index:9998}
+    .mp-title{font-weight:700;font-size:12px;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis}
+    .mp-btn{appearance:none;border:none;outline:none;background:#1F2937;color:#F9FAFB;border-radius:10px;padding:8px 10px;cursor:pointer;font-weight:700}
+    .mp-btn:hover{background:#374151}
+    .mp-bar{height:6px;background:#374151;border-radius:999px;overflow:hidden;flex:1;min-width:120px}
+    .mp-fill{height:100%;background:#60A5FA;width:0%}
+    .mp-time{font-size:11px;opacity:.8;min-width:70px;text-align:right}
+  `;
+  document.head.appendChild(style);
+
+  // container
+  const box = document.createElement("div");
+  box.className = "music-player";
+  box.innerHTML = `
+    <div class="mp-title">🎵 Joy Crookes - Feet Don't Fail Me Now</div>
+    <button id="mp-play" class="mp-btn">▶︎</button>
+    <button id="mp-fwd" class="mp-btn">+10s</button>
+    <div class="mp-bar"><div id="mp-fill" class="mp-fill"></div></div>
+    <div id="mp-time" class="mp-time">0:00 / 0:00</div>
+  `;
+  document.body.appendChild(box);
+
+  // Áudio
+  const audio = new Audio(TRACK_SRC);
+  audio.loop = true;
+  state.audio = audio;
+
+  // eventos UI
+  const btnPlay = box.querySelector("#mp-play");
+  const btnFwd  = box.querySelector("#mp-fwd");
+  const fill    = box.querySelector("#mp-fill");
+  const timeEl  = box.querySelector("#mp-time");
+
+  const fmt = (sec)=> {
+    if(!Number.isFinite(sec)) return "0:00";
+    const m = Math.floor(sec/60), s = Math.floor(sec%60);
+    return `${m}:${s<10?"0":""}${s}`;
+    };
+  const sync = ()=>{
+    const cur = audio.currentTime||0, dur = audio.duration||0;
+    const pct = dur? Math.min(100,(cur/dur)*100):0;
+    fill.style.width = `${pct}%`;
+    timeEl.textContent = `${fmt(cur)} / ${fmt(dur)}`;
+    btnPlay.textContent = audio.paused ? "▶︎" : "⏸";
+  };
+  audio.addEventListener("timeupdate", sync);
+  audio.addEventListener("play", sync);
+  audio.addEventListener("pause", sync);
+  audio.addEventListener("loadedmetadata", sync);
+
+  btnPlay.addEventListener("click", async ()=>{
+    try{
+      if(audio.paused){ await audio.play(); state.audioStarted = true; }
+      else { audio.pause(); }
+    }catch(err){
+      console.warn("Autoplay bloqueado:", err?.message);
+    }finally{ sync(); }
+  });
+  btnFwd.addEventListener("click", ()=>{
+    try{
+      audio.currentTime = Math.min((audio.currentTime||0)+10, (audio.duration||audio.currentTime||0));
+    }catch(_){}
+  });
+
+  // tenta iniciar após primeira interação
+  const tryStart = async ()=>{
+    if(state.audioStarted) return;
+    try{ await audio.play(); state.audioStarted = true; }
+    catch(_){ /* usuário precisa clicar */ }
+    finally{ sync(); document.removeEventListener("click", tryStart, true); }
+  };
+  document.addEventListener("click", tryStart, true);
+
+  state.audioUI = box;
+  return box;
 }
 
 /* ==================== Auth listeners ==================== */
@@ -1763,6 +1933,10 @@ onAuthStateChanged(auth, async (user)=>{
 function init(){
   bindAuthButtons();
   initTabs();
+  listenSettings();          // Edição do torneio
+  ensureTournamentBadge();   // badge inicial
+  ensureMusicPlayerUI();     // player de música
+
   listenPlayers();
   listenMatches();
   listenPosts();
