@@ -4,7 +4,10 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Champions Chess IFMA</title>
-  <link rel="icon" href="logo.png" type="image/png"/>
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="logo.png"/>
+
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css"/>
@@ -26,7 +29,6 @@
       vertical-align:middle;
       white-space:nowrap;
     }
-    /* Ajuste visual para alinhar logo + título + badge */
     .topbar .nav-left{
       display:flex;
       align-items:center;
@@ -44,20 +46,23 @@
     <div class="nav-left">
       <img src="logo.png" alt="Champions Chess IFMA" class="logo logo--small">
       <strong id="brand">Champions Chess IFMA</strong>
-      <!-- Badge fixo ao lado do nome. O app.js atualiza o texto (edição) dinamicamente -->
+      <!-- Badge fixo ao lado do nome. O app.js pode atualizar dinamicamente (edição) -->
       <span id="tournament-badge" class="badge-edicao">Edição #1</span>
     </div>
 
     <div class="nav-center">
-      <button class="tab active" data-tab="home">Home</button>
+      <!-- Todos os rótulos em português -->
+      <button class="tab active" data-tab="home">Início</button>
       <button class="tab" data-tab="regulamento">Regulamento</button>
       <button class="tab" data-tab="partidas">Partidas</button>
       <button class="tab" data-tab="tabela">Tabela</button>
-      <button class="tab" data-tab="players">Players</button>
-      <button class="tab" data-tab="posts">Post</button>
+      <button class="tab" data-tab="players">Jogadores</button>
+      <button class="tab" data-tab="posts">Comunicados</button>
       <button class="tab" data-tab="apostas">Apostas</button>
       <button class="tab" data-tab="chat">Chat</button>
-      <button id="tab-admin" class="tab admin-only hidden" data-tab="admin">Admin</button>
+      <!-- Vencedores fica ANTES do Admin -->
+      <button class="tab" data-tab="vencedores">Vencedores</button>
+      <button id="tab-admin" class="tab admin-only hidden" data-tab="admin">Administração</button>
     </div>
 
     <div class="nav-right">
@@ -84,12 +89,12 @@
             <li><b>Classificação (G2):</b> os 2 melhores de cada grupo avançam às semifinais (1ºA×2ºB e 1ºB×2ºA);</li>
             <li><b>Mata-mata:</b> Semifinais → Final e disputa de 3º lugar;</li>
             <li><b>Transparência:</b> Partidas devem ser comunicadas no grupo e validadas com print/monitor;</li>
-            <li><b>Organização:</b> Use a aba <i>Partidas</i> para datas/códigos e a aba <i>Post</i> para comunicados.</li>
+            <li><b>Organização:</b> Use a aba <i>Partidas</i> para datas/códigos e a aba <i>Comunicados</i> para avisos.</li>
           </ul>
           <div class="cta-row">
             <a class="btn" href="#regulamento">Ver Regulamento</a>
             <a class="btn ghost" href="ChampionsChessIFMA.pdf" target="_blank" rel="noopener">Abrir PDF</a>
-            <a class="btn ghost" href="#players">Lista de Players</a>
+            <a class="btn ghost" href="#players">Lista de Jogadores</a>
           </div>
         </div>
 
@@ -209,9 +214,6 @@
             <button id="match-reset" type="button" class="btn ghost">Limpar</button>
             <button id="match-delete" type="button" class="btn danger">Excluir</button>
           </div>
-          <div class="row" style="margin-top:12px; gap:8px;">
-            <button id="btn-reset-tournament" class="btn danger">Resetar Torneio</button>
-          </div>
         </form>
       </div>
     </section>
@@ -230,7 +232,7 @@
       </div>
     </section>
 
-    <!-- PLAYERS -->
+    <!-- JOGADORES -->
     <section id="players" class="view">
       <div class="grid-2">
         <div class="card">
@@ -276,7 +278,7 @@
       <!-- Conteúdo é injetado pelo app.js (buildPlayerProfileHTML) -->
     </section>
 
-    <!-- POSTS -->
+    <!-- COMUNICADOS -->
     <section id="posts" class="view">
       <div class="card">
         <h2>Comunicados</h2>
@@ -314,7 +316,6 @@
           <h2>Nova Aposta</h2>
           <!-- Bloqueia a navegação nativa SEM depender do JS -->
           <form id="bet-form" class="form" onsubmit="event.preventDefault()" autocomplete="off">
-            <!-- Cada linha em 1 coluna para os dois campos ficarem do MESMO tamanho (full-width) -->
             <div class="row" style="grid-template-columns: 1fr">
               <label>Partida</label>
               <select id="bet-match" required>
@@ -394,6 +395,39 @@
       </div>
     </section>
 
+    <!-- VENCEDORES (placeholder; o app.js preenche/atualiza) -->
+    <section id="vencedores" class="view">
+      <div class="card">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+          <h2 style="margin:0">Campeões</h2>
+          <div>
+            <select id="winners-filter" style="padding:8px 10px;border:1px solid #D1D5DB;border-radius:10px;background:#F9FAFB;outline:none">
+              <option value="byTournament">Por Torneio</option>
+              <option value="rankChampions">Ranking de Campeões</option>
+            </select>
+          </div>
+        </div>
+        <div id="winners-views" style="margin-top:10px">
+          <div id="winners-by-tournament">
+            <div class="table">
+              <table>
+                <thead><tr><th>Torneio</th><th>Campeão</th><th>Vice</th><th>Ver campanha</th></tr></thead>
+                <tbody id="winners-body"><tr><td class="muted" colspan="4">Sem registros.</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+          <div id="winners-rank" style="display:none">
+            <div class="table">
+              <table>
+                <thead><tr><th>Jogador</th><th>Títulos</th></tr></thead>
+                <tbody id="winners-rank-body"><tr><td class="muted" colspan="2">Sem registros.</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- ADMIN -->
     <section id="admin" class="view">
       <div class="grid-2">
@@ -430,7 +464,7 @@
           <h2>Ferramentas</h2>
           <button id="seed-btn" class="btn ghost">Seed de Exemplo</button>
           <p class="muted">Preenche jogadores/rodadas de teste.</p>
-          <!-- Os botões de publicação manual (resultados/adiamentos) são injetados pelo app.js -->
+          <!-- Botões de publicação manual são injetados pelo app.js -->
         </div>
       </div>
 
@@ -443,10 +477,10 @@
 
   <footer class="site-footer">
     <span>© Champions Chess IFMA</span>
+    <span style="margin-left:12px">• Autor: <b>Hugo Oliveira Silva</b></span>
+    <span style="margin-left:12px">• Instagram: <a href="https://instagram.com/xc.hugo" target="_blank" rel="noopener">@xc.hugo</a></span>
   </footer>
 
   <script type="module" src="app.js"></script>
 </body>
 </html>
-
-
